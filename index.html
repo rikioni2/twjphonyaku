@@ -1,0 +1,1645 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>台湾華語トランスクライバー Pro</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Google Fonts: Inter & Noto Sans JP -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <!-- pinyin-pro (安全ラッパー経由でのみ呼び出す) -->
+  <script src="https://unpkg.com/pinyin-pro" defer></script>
+  <style>
+    /* ベースフォント・モバイルビューポート高さ調整 (100dvh対応) */
+    html, body {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      background-color: #f3f5f9;
+      font-family: 'Inter', 'Noto Sans JP', -apple-system, BlinkMacSystemFont, sans-serif;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .app-shell {
+      height: 100vh;
+      height: 100dvh;
+    }
+
+    /* 録音中のパルスアニメーション */
+    @keyframes pulse-ring {
+      0% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.55); }
+      70% { box-shadow: 0 0 0 10px rgba(220, 38, 38, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); }
+    }
+    .recording-pulse {
+      animation: pulse-ring 1.5s infinite;
+    }
+
+    /* ローディングスピナー */
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .spinner {
+      display: inline-block;
+      width: 13px;
+      height: 13px;
+      border: 2px solid rgba(26, 86, 219, 0.25);
+      border-top-color: #1a56db;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      flex-shrink: 0;
+    }
+
+    /* セーフエリア下部余白 */
+    .safe-bottom {
+      padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+    }
+
+    /* =========================================================
+       高密度コンパクト字幕モード (tw-translate 専用)
+       ========================================================= */
+    #transcript-scroll.compact-mode {
+      background-color: #ffffff;
+      padding: 0;
+    }
+    #transcript-scroll.compact-mode #transcript-list {
+      gap: 0;
+      padding-bottom: 1.5rem;
+    }
+    #transcript-scroll.compact-mode .utterance-card {
+      background-color: #ffffff;
+      border: none;
+      border-bottom: 1px solid #e5e7eb;
+      border-radius: 0;
+      box-shadow: none;
+      padding: 5px 8px;
+      margin: 0;
+    }
+    #transcript-scroll.compact-mode .utterance-card::after {
+      content: '';
+      display: table;
+      clear: both;
+    }
+    /* コンパクトモード時はモードバッジ・モデルバッジを非表示 */
+    #transcript-scroll.compact-mode .mode-pill,
+    #transcript-scroll.compact-mode .model-badge-row {
+      display: none !important;
+    }
+    /* タイムスタンプを右上に小さく配置 */
+    #transcript-scroll.compact-mode .card-header {
+      float: right;
+      margin: 0 0 0 8px;
+      padding: 0;
+      line-height: 1.32;
+    }
+    #transcript-scroll.compact-mode .card-time {
+      font-size: 10px;
+      color: #9ca3af;
+      font-weight: 400;
+    }
+    /* 原文（繁体字）は小さく控えめなグレー */
+    #transcript-scroll.compact-mode .orig-text {
+      font-size: 11px;
+      line-height: 1.28;
+      font-weight: 400;
+      color: #6b7280;
+      margin-bottom: 1px;
+    }
+    /* 原文表示 OFF 時は中国語原文を完全非表示にして日本語訳で画面を埋める */
+    #transcript-scroll.compact-mode.hide-original .orig-text {
+      display: none !important;
+    }
+    /* 翻訳エリアの区切り線・余白を詰める */
+    #transcript-scroll.compact-mode .output-area {
+      margin-top: 0;
+      padding-top: 0;
+      border-top: none;
+    }
+    /* 日本語訳を主役（高コントラスト・濃い文字）にする */
+    #transcript-scroll.compact-mode .trans-text {
+      font-size: 14px;
+      line-height: 1.32;
+      font-weight: 600;
+      color: #0f172a;
+    }
+    /* 翻訳中表示を1行スリム化 */
+    #transcript-scroll.compact-mode .translating-row {
+      font-size: 12px;
+      line-height: 1.32;
+      color: #6b7280;
+      font-style: italic;
+      gap: 5px;
+    }
+    #transcript-scroll.compact-mode .spinner {
+      width: 11px;
+      height: 11px;
+      border-width: 1.5px;
+    }
+    /* エラー表示もスリム＆インライン再試行ボタンに */
+    #transcript-scroll.compact-mode .error-box {
+      background-color: #fff1f2;
+      border: 1px solid #fecdd3;
+      border-radius: 6px;
+      padding: 3px 6px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    #transcript-scroll.compact-mode .error-msg {
+      font-size: 11.5px;
+      line-height: 1.3;
+    }
+    #transcript-scroll.compact-mode .card-retry-btn {
+      padding: 2px 7px;
+      font-size: 11px;
+      border-radius: 5px;
+    }
+    /* 文字サイズ「小」オプション */
+    #transcript-scroll.compact-mode.compact-size-sm .orig-text {
+      font-size: 10px;
+      line-height: 1.24;
+    }
+    #transcript-scroll.compact-mode.compact-size-sm .trans-text {
+      font-size: 12.5px;
+      line-height: 1.3;
+    }
+    /* コンパクトモード時のリアルタイム認識中バー */
+    #transcript-scroll.compact-mode #interim-preview {
+      border-radius: 0;
+      border-left: none;
+      border-right: none;
+      border-top: none;
+      border-bottom: 1px dashed #cbd5e1;
+      box-shadow: none;
+      padding: 5px 8px;
+      margin: 0;
+      background-color: #f8fafc;
+    }
+    #transcript-scroll.compact-mode #interim-preview-text {
+      font-size: 12.5px;
+      line-height: 1.3;
+    }
+  </style>
+</head>
+<body class="text-slate-800 overflow-hidden select-none">
+
+  <!-- アプリ全体コンテナ -->
+  <div class="app-shell flex flex-col w-full bg-[#f3f5f9]">
+
+    <!-- ヘッダーバー & 設定ドロワー & モード選択 -->
+    <header class="bg-white border-b border-slate-200/90 px-3 pt-2.5 pb-2 shadow-sm shrink-0 z-20">
+      <div class="max-w-2xl mx-auto space-y-2">
+
+        <!-- タイトル行 -->
+        <div class="flex items-center justify-between gap-2">
+          <div class="flex items-center gap-1.5 min-w-0">
+            <span class="text-lg shrink-0" aria-hidden="true">🇹🇼</span>
+            <h1 class="text-sm sm:text-base font-bold text-slate-900 truncate">
+              台湾華語トランスクライバー Pro
+            </h1>
+          </div>
+
+          <button
+            type="button"
+            id="settings-toggle-btn"
+            aria-expanded="false"
+            aria-controls="api-settings-drawer"
+            class="flex items-center gap-1.5 px-2.5 py-1 rounded-xl border border-slate-300 bg-slate-50 hover:bg-slate-100 active:bg-slate-200 text-xs font-semibold text-slate-700 transition shrink-0 cursor-pointer"
+          >
+            <span>⚙️ 設定</span>
+            <span
+              id="api-status-pill"
+              class="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800"
+            >
+              未設定
+            </span>
+          </button>
+        </div>
+
+        <!-- 折りたたみ式 API設定ドロワー -->
+        <section
+          id="api-settings-drawer"
+          class="hidden bg-slate-50 border border-slate-200 rounded-2xl p-3 space-y-2.5 max-h-[58vh] overflow-y-auto"
+          aria-label="API設定"
+        >
+          <!-- Gemini APIキー入力 -->
+          <div class="space-y-1">
+            <div class="flex items-center justify-between">
+              <label for="api-key-input" class="text-xs font-bold text-slate-700">
+                Gemini APIキー（翻訳モードで必要）
+              </label>
+              <button
+                type="button"
+                id="toggle-key-eye-btn"
+                class="text-xs font-semibold text-blue-600 hover:text-blue-800 px-1.5 py-0.5 rounded-lg hover:bg-blue-50 transition cursor-pointer"
+              >
+                👁️ 表示
+              </button>
+            </div>
+            <input
+              type="password"
+              id="api-key-input"
+              placeholder="AIzaSy... を貼り付け"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+              class="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 select-text"
+            >
+          </div>
+
+          <!-- 保存・リセットボタン行 -->
+          <div class="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              id="save-api-btn"
+              class="py-2 px-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98] text-white text-xs sm:text-sm font-bold shadow-sm transition cursor-pointer"
+            >
+              💾 保存
+            </button>
+            <button
+              type="button"
+              id="reset-api-btn"
+              class="py-2 px-2 rounded-xl bg-rose-600 hover:bg-rose-700 active:scale-[0.98] text-white text-xs sm:text-sm font-bold shadow-sm transition cursor-pointer"
+            >
+              🗑️ リセット
+            </button>
+          </div>
+
+          <!-- 接続テスト＆モデル取得ボタン -->
+          <button
+            type="button"
+            id="test-api-btn"
+            class="w-full py-2 px-3 rounded-xl bg-blue-600 hover:bg-blue-700 active:scale-[0.98] text-white text-xs sm:text-sm font-bold shadow-sm transition cursor-pointer"
+          >
+            🔌 接続テスト＆モデル取得
+          </button>
+
+          <!-- 使用AIモデル手動切替ドロップダウン -->
+          <div class="space-y-1">
+            <div class="flex items-center justify-between gap-2">
+              <label for="model-select" class="text-xs font-bold text-slate-700">
+                翻訳AIモデル
+              </label>
+              <span id="sticky-model-hint" class="text-[11px] font-medium text-slate-500 truncate">
+                最速モード（3.5-flash-lite優先）
+              </span>
+            </div>
+            <div class="relative">
+              <select
+                id="model-select"
+                class="w-full appearance-none bg-white border border-slate-300 text-slate-800 font-semibold text-xs sm:text-sm rounded-xl px-3 py-2 pr-8 focus:outline-none focus:ring-2 focus:ring-blue-500 transition cursor-pointer"
+              >
+                <option value="auto">自動 (3.5-flash-lite優先)</option>
+                <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite</option>
+                <option value="gemini-3.5-flash">gemini-3.5-flash</option>
+                <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite</option>
+                <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                <option value="gemini-3.8-flash">gemini-3.8-flash</option>
+              </select>
+              <span class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-slate-500 text-xs">
+                ▼
+              </span>
+            </div>
+          </div>
+
+          <!-- インラインステータス表示 -->
+          <div
+            id="api-inline-status"
+            class="text-xs font-medium text-slate-600 leading-relaxed break-words min-h-[1rem]"
+          ></div>
+        </section>
+
+        <!-- モード選択ドロップダウン -->
+        <div class="relative">
+          <select
+            id="mode-select"
+            aria-label="文字起こし・翻訳モード選択"
+            class="w-full appearance-none bg-blue-50/90 border border-blue-200 text-blue-950 font-bold text-xs sm:text-sm rounded-xl px-3 py-2 pr-8 focus:outline-none focus:ring-2 focus:ring-blue-500 transition cursor-pointer"
+          >
+            <option value="tw-practice">🇹🇼 台湾華語（発音練習・ピンイン付）</option>
+            <option value="tw-translate">🇹🇼→🇯🇵 台湾華語（日本語へ翻訳・高密度）</option>
+            <option value="jp-to-tw">🇯🇵→🇹🇼 日本語（台湾華語へ翻訳+ピンイン）</option>
+            <option value="en-translate">🇺🇸→🇯🇵 英語（日本語へ翻訳）</option>
+          </select>
+          <span class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-blue-700 text-xs">
+            ▼
+          </span>
+        </div>
+
+        <!-- 高密度モード専用 スリム・クイックオプションバー (tw-translate時のみ表示) -->
+        <div
+          id="compact-options-bar"
+          class="hidden flex items-center justify-between gap-2 px-2 py-1 rounded-xl bg-slate-100 border border-slate-200/80 text-[11px]"
+        >
+          <span class="font-bold text-slate-600 truncate">📺 字幕モード</span>
+          <div class="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              id="toggle-original-btn"
+              class="px-2 py-1 rounded-lg font-bold border transition cursor-pointer bg-blue-600 text-white border-blue-600"
+            >
+              原文表示: ON
+            </button>
+            <button
+              type="button"
+              id="toggle-fontsize-btn"
+              class="px-2 py-1 rounded-lg font-bold border transition cursor-pointer bg-white text-slate-700 border-slate-300 hover:bg-slate-50"
+            >
+              文字: 中
+            </button>
+          </div>
+        </div>
+
+      </div>
+    </header>
+
+    <!-- メイン会話タイムライン (relative wrapper for floating scroll button) -->
+    <div class="relative flex-1 min-h-0 flex flex-col">
+      <main id="transcript-scroll" class="flex-1 overflow-y-auto px-3 py-2.5">
+        <div id="transcript-list" class="max-w-2xl mx-auto flex flex-col gap-2.5 pb-4">
+          <!-- 初期ガイドカード -->
+          <div
+            id="empty-state-card"
+            class="bg-white border border-dashed border-slate-300 rounded-2xl p-5 text-center text-slate-500 mt-3 mx-3 shadow-sm"
+          >
+            <div class="text-2xl mb-1.5" aria-hidden="true">🎤</div>
+            <p id="empty-state-title" class="text-sm font-bold text-slate-700 mb-1">
+              台湾華語（発音練習・ピンイン付）モード
+            </p>
+            <p id="empty-state-desc" class="text-xs leading-relaxed text-slate-500">
+              下の「🎤 録音開始」を押して台湾華語を話すと、繁体字と声調記号付きピンインが表示されます（APIキー不要）。
+            </p>
+          </div>
+
+          <!-- ライブ認識中（確定前）テキスト表示 -->
+          <div
+            id="interim-preview"
+            class="hidden bg-white/90 border border-dashed border-blue-300 rounded-2xl px-3.5 py-2.5 shadow-sm"
+          >
+            <div class="flex items-center gap-1.5 text-[11px] font-bold text-blue-600 mb-0.5">
+              <span class="inline-block w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse"></span>
+              <span>聞き取り中...</span>
+            </div>
+            <div id="interim-preview-text" class="text-base font-medium text-slate-500 italic break-words"></div>
+          </div>
+        </div>
+      </main>
+
+      <!-- 上にスクロールしている時だけ表示される「↓ 最新へ」ボタン -->
+      <button
+        type="button"
+        id="scroll-bottom-btn"
+        class="hidden absolute bottom-3 right-3 z-30 px-3 py-1.5 rounded-full bg-slate-900/85 hover:bg-slate-900 text-white text-xs font-bold shadow-lg backdrop-blur-sm transition active:scale-95 cursor-pointer"
+      >
+        ↓ 最新へ
+      </button>
+    </div>
+
+    <!-- 下部固定コントロールバー（縦幅を抑えて会話表示領域を最大化） -->
+    <footer class="bg-white border-t border-slate-200/90 px-3 pt-2 safe-bottom shrink-0 z-20 shadow-[0_-3px_10px_rgba(15,23,42,0.05)]">
+      <div class="max-w-2xl mx-auto space-y-1.5">
+        <!-- プライマリ録音ボタン -->
+        <button
+          type="button"
+          id="mic-btn"
+          class="w-full py-2.5 px-4 rounded-xl bg-[#16a34a] hover:bg-[#15803d] active:scale-[0.99] text-white font-bold text-sm sm:text-base shadow-sm flex items-center justify-center gap-2 transition cursor-pointer"
+        >
+          <span id="mic-btn-icon" aria-hidden="true">🎤</span>
+          <span id="mic-btn-label">録音開始</span>
+        </button>
+
+        <!-- セカンダリボタン行（全コピー・クリア） -->
+        <div class="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            id="copy-btn"
+            class="py-1.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-700 active:scale-[0.98] text-white font-bold text-xs sm:text-sm shadow-sm flex items-center justify-center gap-1.5 transition cursor-pointer"
+          >
+            <span aria-hidden="true">📋</span>
+            <span>全コピー</span>
+          </button>
+          <button
+            type="button"
+            id="clear-btn"
+            class="py-1.5 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 active:scale-[0.98] text-slate-700 border border-slate-300 font-bold text-xs sm:text-sm shadow-sm flex items-center justify-center gap-1.5 transition cursor-pointer"
+          >
+            <span aria-hidden="true">🗑️</span>
+            <span>クリア</span>
+          </button>
+        </div>
+      </div>
+    </footer>
+
+  </div>
+
+  <!-- ボトムトースト通知（alert / confirm 不使用） -->
+  <div
+    id="toast"
+    role="status"
+    aria-live="polite"
+    class="fixed bottom-28 left-1/2 -translate-x-1/2 translate-y-2 opacity-0 pointer-events-none bg-slate-900/95 text-white text-xs sm:text-sm font-semibold px-4 py-2 rounded-full shadow-lg transition-all duration-200 z-50 max-w-[92vw] text-center"
+  ></div>
+
+  <script>
+    /**
+     * 台湾華語トランスクライバー Pro
+     * - クラッシュ防止設計（全DOM操作はDOMContentLoaded後、pinyinPro・4層ストレージを個別try/catch保護）
+     * - tw-translate 専用の高密度ライブ字幕レイアウト（原文表示ON/OFF・文字サイズ小/中・スマート自動スクロール）
+     * - gemini-3.5-flash-lite 最優先・スティッキー記憶・6秒タイムアウト・待機なし即時フォールバック
+     */
+    (function () {
+      'use strict';
+
+      // =========================================================
+      // 1. 定数・設定
+      // =========================================================
+      const STORAGE_PREFIX = 'tw_transcriber_pro_v4_';
+      const KEY_API = STORAGE_PREFIX + 'api_key';
+      const KEY_STICKY_MODEL = STORAGE_PREFIX + 'last_working_model';
+      const KEY_MODEL_OVERRIDE = STORAGE_PREFIX + 'model_override';
+      const KEY_SHOW_ORIGINAL = STORAGE_PREFIX + 'compact_show_orig';
+      const KEY_COMPACT_SIZE = STORAGE_PREFIX + 'compact_font_size';
+
+      const FETCH_TIMEOUT_MS = 6000;
+      const AUTO_SCROLL_THRESHOLD_PX = 80;
+      const DEFAULT_MODEL_PRIORITY = [
+        'gemini-3.5-flash-lite',
+        'gemini-3.5-flash',
+        'gemini-2.5-flash-lite',
+        'gemini-2.5-flash',
+        'gemini-3.8-flash'
+      ];
+
+      const EXCLUDED_MODEL_REGEX = /(embedding|imagen|tts|aqa|veo|audio|whisper|vision|robotics|computer-use|learnlm)/i;
+
+      const MODE_META = {
+        'tw-practice': {
+          lang: 'zh-TW',
+          pill: '台湾華語 発音',
+          pillClass: 'bg-emerald-100 text-emerald-800',
+          hintTitle: '台湾華語（発音練習・ピンイン付）モード',
+          hintDesc: '下の「🎤 録音開始」を押して台湾華語を話すと、繁体字と声調記号付きピンインが表示されます（APIキー不要）。'
+        },
+        'tw-translate': {
+          lang: 'zh-TW',
+          pill: '台湾華語→日本語',
+          pillClass: 'bg-blue-100 text-blue-800',
+          hintTitle: '台湾華語（日本語へ翻訳・高密度）モード',
+          hintDesc: '台湾人同士の会話などを字幕のように詰め込んで日本語訳します。上のボタンで「原文表示」や「文字サイズ」を切替できます。'
+        },
+        'jp-to-tw': {
+          lang: 'ja-JP',
+          pill: '日本語→台湾華語',
+          pillClass: 'bg-indigo-100 text-indigo-800',
+          hintTitle: '日本語（台湾華語へ翻訳+ピンイン）モード',
+          hintDesc: '日本語で話すと、自然な台湾華語（繁体字）と声調記号付きピンインに翻訳して表示します。'
+        },
+        'en-translate': {
+          lang: 'en-US',
+          pill: '英語→日本語',
+          pillClass: 'bg-violet-100 text-violet-800',
+          hintTitle: '英語（日本語へ翻訳）モード',
+          hintDesc: '聞き取った英語をテキスト化し、自然な日本語訳を表示します。'
+        }
+      };
+
+      // =========================================================
+      // 2. アプリケーション状態
+      // =========================================================
+      let apiKey = '';
+      let lastWorkingModel = '';
+      let selectedModelOverride = 'auto';
+      let showOriginalInCompact = true;
+      let compactFontSize = 'md'; // 'md' | 'sm'
+      let discoveredModels = [];
+      let recognition = null;
+      let isRecording = false;
+      let restartTimer = null;
+      let toastTimer = null;
+
+      // DOM 参照
+      const el = {};
+
+      // =========================================================
+      // 3. 安全なヘルパー関数
+      // =========================================================
+
+      /**
+       * pinyin-pro を安全に呼び出すラッパー（CDN遅延・ブロック時もクラッシュゼロ）
+       */
+      function getPinyin(text) {
+        try {
+          if (window.pinyinPro && typeof window.pinyinPro.pinyin === 'function') {
+            return window.pinyinPro.pinyin(text, { toneType: 'symbol' });
+          }
+        } catch (e) {}
+        return '';
+      }
+
+      function cleanApiKey(raw) {
+        return String(raw || '').replace(/\s+/g, '');
+      }
+
+      function escapeHtml(str) {
+        return String(str || '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+
+      function formatNow() {
+        const d = new Date();
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+      }
+
+      function showToast(message) {
+        if (!el.toast) return;
+        el.toast.textContent = String(message || '');
+        el.toast.classList.remove('opacity-0', 'translate-y-2');
+        el.toast.classList.add('opacity-100', 'translate-y-0');
+        if (toastTimer) clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => {
+          if (!el.toast) return;
+          el.toast.classList.remove('opacity-100', 'translate-y-0');
+          el.toast.classList.add('opacity-0', 'translate-y-2');
+        }, 2400);
+      }
+
+      // =========================================================
+      // 4. スマート自動スクロール制御
+      // =========================================================
+
+      /**
+       * ユーザーが最下部付近（約80px以内）を見ているか判定
+       */
+      function isNearBottom() {
+        if (!el.transcriptScroll) return true;
+        const { scrollHeight, scrollTop, clientHeight } = el.transcriptScroll;
+        return (scrollHeight - scrollTop - clientHeight) <= AUTO_SCROLL_THRESHOLD_PX;
+      }
+
+      function updateScrollButtonVisibility() {
+        if (!el.scrollBottomBtn || !el.transcriptScroll) return;
+        const hasScrollableContent = el.transcriptScroll.scrollHeight > el.transcriptScroll.clientHeight + 40;
+        if (hasScrollableContent && !isNearBottom()) {
+          el.scrollBottomBtn.classList.remove('hidden');
+        } else {
+          el.scrollBottomBtn.classList.add('hidden');
+        }
+      }
+
+      function scrollToBottom(force) {
+        if (!el.transcriptScroll) return;
+        if (force) {
+          requestAnimationFrame(() => {
+            if (!el.transcriptScroll) return;
+            el.transcriptScroll.scrollTop = el.transcriptScroll.scrollHeight;
+            updateScrollButtonVisibility();
+          });
+        }
+      }
+
+      // =========================================================
+      // 5. 4重ストレージ管理（個別 try/catch ガード）
+      // =========================================================
+
+      function safeStoreSet(storageKey, value) {
+        const val = String(value || '');
+
+        // 1) localStorage
+        try {
+          if (val) window.localStorage.setItem(storageKey, val);
+          else window.localStorage.removeItem(storageKey);
+        } catch (e) {}
+
+        // 2) sessionStorage
+        try {
+          if (val) window.sessionStorage.setItem(storageKey, val);
+          else window.sessionStorage.removeItem(storageKey);
+        } catch (e) {}
+
+        // 3) window.name
+        try {
+          let obj = {};
+          if (typeof window.name === 'string' && window.name.trim().startsWith('{')) {
+            try {
+              const parsed = JSON.parse(window.name);
+              if (parsed && typeof parsed === 'object') obj = parsed;
+            } catch (parseErr) {
+              obj = {};
+            }
+          }
+          if (val) obj[storageKey] = val;
+          else delete obj[storageKey];
+          window.name = JSON.stringify(obj);
+        } catch (e) {}
+
+        // 4) document.cookie
+        try {
+          if (val) {
+            document.cookie = `${storageKey}=${encodeURIComponent(val)}; path=/; max-age=2592000; SameSite=Lax`;
+          } else {
+            document.cookie = `${storageKey}=; path=/; max-age=0; SameSite=Lax`;
+          }
+        } catch (e) {}
+      }
+
+      function safeStoreGet(storageKey) {
+        let found = '';
+
+        if (!found) {
+          try {
+            const v = window.localStorage.getItem(storageKey);
+            if (v) found = String(v);
+          } catch (e) {}
+        }
+        if (!found) {
+          try {
+            const v = window.sessionStorage.getItem(storageKey);
+            if (v) found = String(v);
+          } catch (e) {}
+        }
+        if (!found) {
+          try {
+            if (typeof window.name === 'string' && window.name.trim().startsWith('{')) {
+              const parsed = JSON.parse(window.name);
+              if (parsed && typeof parsed[storageKey] === 'string' && parsed[storageKey]) {
+                found = parsed[storageKey];
+              }
+            }
+          } catch (e) {}
+        }
+        if (!found) {
+          try {
+            const cookies = (document.cookie || '').split(';');
+            for (let i = 0; i < cookies.length; i++) {
+              const pair = cookies[i].trim();
+              if (pair.startsWith(storageKey + '=')) {
+                found = decodeURIComponent(pair.slice(storageKey.length + 1));
+                break;
+              }
+            }
+          } catch (e) {}
+        }
+
+        if (found) safeStoreSet(storageKey, found);
+        return found;
+      }
+
+      function loadPersistedSettings() {
+        // 旧バージョンキーからの引き継ぎもサポート
+        apiKey = cleanApiKey(safeStoreGet(KEY_API) || safeStoreGet('tw_transcriber_pro_v3_api_key'));
+        if (apiKey) safeStoreSet(KEY_API, apiKey);
+
+        lastWorkingModel = (safeStoreGet(KEY_STICKY_MODEL) || safeStoreGet('tw_transcriber_pro_v3_last_working_model')).trim();
+        selectedModelOverride = safeStoreGet(KEY_MODEL_OVERRIDE).trim() || 'auto';
+
+        const savedOrig = safeStoreGet(KEY_SHOW_ORIGINAL);
+        showOriginalInCompact = savedOrig === 'off' ? false : true;
+
+        const savedSize = safeStoreGet(KEY_COMPACT_SIZE);
+        compactFontSize = savedSize === 'sm' ? 'sm' : 'md';
+
+        if (el.apiKeyInput && apiKey) {
+          el.apiKeyInput.value = apiKey;
+        }
+        updateApiStatusUI();
+        refreshModelDropdown();
+        updateStickyHint();
+        applyCompactOptionStyles();
+      }
+
+      function saveApiKeyEverywhere(rawKey) {
+        const cleaned = cleanApiKey(rawKey);
+        apiKey = cleaned;
+        safeStoreSet(KEY_API, cleaned);
+        if (el.apiKeyInput) el.apiKeyInput.value = cleaned;
+        updateApiStatusUI();
+      }
+
+      function saveLastWorkingModel(modelName) {
+        lastWorkingModel = String(modelName || '').trim();
+        safeStoreSet(KEY_STICKY_MODEL, lastWorkingModel);
+        updateStickyHint();
+      }
+
+      function saveModelOverride(val) {
+        selectedModelOverride = String(val || 'auto').trim() || 'auto';
+        safeStoreSet(KEY_MODEL_OVERRIDE, selectedModelOverride === 'auto' ? '' : selectedModelOverride);
+        updateStickyHint();
+      }
+
+      function updateApiStatusUI() {
+        if (!el.apiStatusPill) return;
+        if (apiKey) {
+          el.apiStatusPill.textContent = '設定済み';
+          el.apiStatusPill.className = 'px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800';
+        } else {
+          el.apiStatusPill.textContent = '未設定';
+          el.apiStatusPill.className = 'px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800';
+        }
+      }
+
+      function updateStickyHint() {
+        if (!el.stickyModelHint) return;
+        if (selectedModelOverride !== 'auto') {
+          el.stickyModelHint.textContent = `固定中: ${selectedModelOverride}`;
+        } else if (lastWorkingModel) {
+          el.stickyModelHint.textContent = `優先記憶: ⚡ ${lastWorkingModel}`;
+        } else {
+          el.stickyModelHint.textContent = '最速モード（3.5-flash-lite優先）';
+        }
+      }
+
+      function setInlineStatus(message, type) {
+        if (!el.apiInlineStatus) return;
+        el.apiInlineStatus.textContent = message || '';
+        if (type === 'success') {
+          el.apiInlineStatus.className = 'text-xs font-semibold text-emerald-700 leading-relaxed break-words min-h-[1rem]';
+        } else if (type === 'error') {
+          el.apiInlineStatus.className = 'text-xs font-semibold text-rose-600 leading-relaxed break-words min-h-[1rem]';
+        } else if (type === 'info') {
+          el.apiInlineStatus.className = 'text-xs font-semibold text-blue-700 leading-relaxed break-words min-h-[1rem]';
+        } else {
+          el.apiInlineStatus.className = 'text-xs font-medium text-slate-600 leading-relaxed break-words min-h-[1rem]';
+        }
+      }
+
+      function refreshModelDropdown() {
+        if (!el.modelSelect) return;
+        const merged = [];
+        DEFAULT_MODEL_PRIORITY.forEach((m) => { if (!merged.includes(m)) merged.push(m); });
+        discoveredModels.forEach((m) => { if (!merged.includes(m)) merged.push(m); });
+        if (selectedModelOverride !== 'auto' && !merged.includes(selectedModelOverride)) {
+          merged.push(selectedModelOverride);
+        }
+
+        el.modelSelect.innerHTML = '';
+        const autoOpt = document.createElement('option');
+        autoOpt.value = 'auto';
+        autoOpt.textContent = '自動 (3.5-flash-lite優先)';
+        el.modelSelect.appendChild(autoOpt);
+
+        merged.forEach((modelName) => {
+          const opt = document.createElement('option');
+          opt.value = modelName;
+          opt.textContent = modelName;
+          el.modelSelect.appendChild(opt);
+        });
+
+        el.modelSelect.value = merged.includes(selectedModelOverride) ? selectedModelOverride : 'auto';
+      }
+
+      // =========================================================
+      // 6. モード別レイアウト＆高密度オプション制御
+      // =========================================================
+
+      function applyModeLayout() {
+        if (!el.modeSelect || !el.transcriptScroll || !el.compactOptionsBar) return;
+        const mode = el.modeSelect.value;
+        const isCompact = mode === 'tw-translate';
+
+        el.transcriptScroll.classList.toggle('compact-mode', isCompact);
+        el.compactOptionsBar.classList.toggle('hidden', !isCompact);
+
+        updateEmptyStateHint();
+        applyCompactOptionStyles();
+        updateScrollButtonVisibility();
+      }
+
+      function applyCompactOptionStyles() {
+        if (!el.transcriptScroll) return;
+        el.transcriptScroll.classList.toggle('hide-original', !showOriginalInCompact);
+        el.transcriptScroll.classList.toggle('compact-size-sm', compactFontSize === 'sm');
+
+        if (el.toggleOriginalBtn) {
+          el.toggleOriginalBtn.textContent = showOriginalInCompact ? '原文表示: ON' : '原文表示: OFF';
+          if (showOriginalInCompact) {
+            el.toggleOriginalBtn.className = 'px-2 py-1 rounded-lg font-bold border transition cursor-pointer bg-blue-600 text-white border-blue-600';
+          } else {
+            el.toggleOriginalBtn.className = 'px-2 py-1 rounded-lg font-bold border transition cursor-pointer bg-white text-slate-600 border-slate-300 hover:bg-slate-50';
+          }
+        }
+
+        if (el.toggleFontSizeBtn) {
+          el.toggleFontSizeBtn.textContent = compactFontSize === 'sm' ? '文字: 小' : '文字: 中';
+          if (compactFontSize === 'sm') {
+            el.toggleFontSizeBtn.className = 'px-2 py-1 rounded-lg font-bold border transition cursor-pointer bg-slate-800 text-white border-slate-800';
+          } else {
+            el.toggleFontSizeBtn.className = 'px-2 py-1 rounded-lg font-bold border transition cursor-pointer bg-white text-slate-700 border-slate-300 hover:bg-slate-50';
+          }
+        }
+      }
+
+      function updateEmptyStateHint() {
+        if (!el.modeSelect || !el.emptyStateTitle || !el.emptyStateDesc) return;
+        const meta = MODE_META[el.modeSelect.value] || MODE_META['tw-practice'];
+        el.emptyStateTitle.textContent = meta.hintTitle;
+        el.emptyStateDesc.textContent = meta.hintDesc;
+      }
+
+      // =========================================================
+      // 7. Gemini API 高速翻訳エンジン（スティッキー + 6秒タイムアウト + 即時フォールバック）
+      // =========================================================
+
+      async function requestGeminiModel(model, prompt, key) {
+        const controller = new AbortController();
+        const timerId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
+
+        try {
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: prompt }] }]
+            }),
+            signal: controller.signal
+          });
+
+          let data = {};
+          try {
+            data = await response.json();
+          } catch (e) {
+            data = {};
+          }
+
+          if (!response.ok) {
+            const detail = data?.error?.message || response.statusText || 'APIエラー';
+            const err = new Error(`HTTP ${response.status}: ${detail}`);
+            err.status = response.status;
+            err.apiReason = data?.error?.status || '';
+            err.rawMessage = detail;
+            throw err;
+          }
+
+          const out = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+          if (!out) throw new Error('翻訳結果が空でした');
+          return out;
+        } catch (err) {
+          if (err && err.name === 'AbortError') {
+            const timeoutErr = new Error('タイムアウト (6秒)');
+            timeoutErr.isTimeout = true;
+            throw timeoutErr;
+          }
+          throw err;
+        } finally {
+          clearTimeout(timerId);
+        }
+      }
+
+      function isInvalidApiKeyError(err) {
+        if (!err) return false;
+        const status = err.status;
+        const msg = `${err.message || ''} ${err.rawMessage || ''} ${err.apiReason || ''}`;
+        return (
+          (status === 400 || status === 401 || status === 403) &&
+          /(API_KEY_INVALID|API key not valid|API key expired|INVALID_ARGUMENT.*API key)/i.test(msg)
+        );
+      }
+
+      async function discoverModelsViaListApi(key) {
+        const controller = new AbortController();
+        const timerId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+        const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`;
+
+        try {
+          const res = await fetch(url, { signal: controller.signal });
+          let data = {};
+          try {
+            data = await res.json();
+          } catch (e) {
+            data = {};
+          }
+
+          if (!res.ok) {
+            const detail = data?.error?.message || res.statusText || 'ListModels取得エラー';
+            const err = new Error(`HTTP ${res.status}: ${detail}`);
+            err.status = res.status;
+            err.rawMessage = detail;
+            throw err;
+          }
+
+          const rawModels = Array.isArray(data.models) ? data.models : [];
+          const filtered = rawModels
+            .filter((m) => {
+              const methods = Array.isArray(m.supportedGenerationMethods) ? m.supportedGenerationMethods : [];
+              if (!methods.includes('generateContent')) return false;
+              const shortName = String(m.name || '').replace(/^models\//, '');
+              if (!shortName.toLowerCase().includes('gemini')) return false;
+              if (EXCLUDED_MODEL_REGEX.test(shortName)) return false;
+              return true;
+            })
+            .map((m) => String(m.name || '').replace(/^models\//, ''));
+
+          const unique = Array.from(new Set(filtered));
+          unique.sort((a, b) => {
+            const score = (name) => {
+              const lower = name.toLowerCase();
+              if (lower === 'gemini-3.5-flash-lite') return 0;
+              if (lower.includes('flash-lite')) return 1;
+              if (lower.includes('lite')) return 2;
+              if (lower.includes('flash')) return 3;
+              if (lower.includes('pro')) return 4;
+              return 5;
+            };
+            const diff = score(a) - score(b);
+            return diff !== 0 ? diff : a.localeCompare(b);
+          });
+
+          discoveredModels = unique;
+          refreshModelDropdown();
+          return unique;
+        } finally {
+          clearTimeout(timerId);
+        }
+      }
+
+      function buildFastCandidateList() {
+        if (selectedModelOverride && selectedModelOverride !== 'auto') {
+          return [selectedModelOverride];
+        }
+        const list = [];
+        if (lastWorkingModel) list.push(lastWorkingModel);
+        DEFAULT_MODEL_PRIORITY.forEach((m) => {
+          if (!list.includes(m)) list.push(m);
+        });
+        return list;
+      }
+
+      async function callGeminiFast(prompt, key, onProgress) {
+        const candidates = buildFastCandidateList();
+        const tried = new Set();
+        let lastErr = null;
+
+        for (let i = 0; i < candidates.length; i++) {
+          const model = candidates[i];
+          tried.add(model);
+          if (typeof onProgress === 'function') onProgress(`翻訳中... (${model})`);
+
+          try {
+            const text = await requestGeminiModel(model, prompt, key);
+            saveLastWorkingModel(model);
+            return { text, model };
+          } catch (err) {
+            if (isInvalidApiKeyError(err)) {
+              throw new Error('APIキーが無効です。設定画面で正しいGemini APIキーを確認してください。');
+            }
+            lastErr = new Error(`[${model}] ${err.message || '通信エラー'}`);
+          }
+        }
+
+        // 全候補が失敗した場合のみ ListModels を呼び出して代替モデルを最大3つ試行
+        if (selectedModelOverride === 'auto') {
+          if (typeof onProgress === 'function') onProgress('代替モデルを検索中...');
+          try {
+            const available = await discoverModelsViaListApi(key);
+            const extras = available.filter((m) => !tried.has(m)).slice(0, 3);
+            for (let i = 0; i < extras.length; i++) {
+              const model = extras[i];
+              if (typeof onProgress === 'function') onProgress(`翻訳中... (${model})`);
+              try {
+                const text = await requestGeminiModel(model, prompt, key);
+                saveLastWorkingModel(model);
+                return { text, model };
+              } catch (err) {
+                if (isInvalidApiKeyError(err)) {
+                  throw new Error('APIキーが無効です。設定画面で正しいGemini APIキーを確認してください。');
+                }
+                lastErr = new Error(`[${model}] ${err.message || '通信エラー'}`);
+              }
+            }
+          } catch (listErr) {
+            if (isInvalidApiKeyError(listErr)) {
+              throw new Error('APIキーが無効です。設定画面で正しいGemini APIキーを確認してください。');
+            }
+            if (!lastErr) lastErr = listErr;
+          }
+        }
+
+        throw lastErr || new Error('翻訳モデルに接続できませんでした');
+      }
+
+      function buildPromptForMode(text, mode) {
+        if (mode === 'tw-translate') {
+          return `Translate the following Taiwanese Mandarin into natural, concise Japanese suitable for live conversation subtitles. Output ONLY the Japanese translation with no notes, no quotes, and no markdown.\n\n${text}`;
+        }
+        if (mode === 'jp-to-tw') {
+          return `Translate the following Japanese into natural Traditional Chinese (Taiwan Mandarin / 繁体字). Output ONLY the Traditional Chinese text without pinyin, romaji, or explanations.\n\n${text}`;
+        }
+        if (mode === 'en-translate') {
+          return `Translate the following English into natural, concise Japanese. Output ONLY the Japanese translation with no notes or markdown.\n\n${text}`;
+        }
+        return text;
+      }
+
+      // =========================================================
+      // 8. 会話アイテムの生成・翻訳描画
+      // =========================================================
+
+      function appendFinalUtterance(text, mode) {
+        const shouldScroll = isNearBottom();
+
+        if (el.emptyStateCard) {
+          el.emptyStateCard.classList.add('hidden');
+        }
+
+        const meta = MODE_META[mode] || MODE_META['tw-practice'];
+        const timeStr = formatNow();
+        const card = document.createElement('article');
+        card.className = 'utterance-card bg-white rounded-2xl border border-slate-200/90 p-3.5 shadow-sm';
+        card.dataset.mode = mode;
+        card.dataset.time = timeStr;
+        card.dataset.finalized = 'true';
+
+        card.innerHTML = `
+          <div class="card-header flex items-center justify-between gap-2 mb-1.5">
+            <span class="mode-pill px-2.5 py-0.5 rounded-full text-[11px] font-bold ${meta.pillClass}">
+              ${escapeHtml(meta.pill)}
+            </span>
+            <span class="card-time text-[11px] font-medium text-slate-400">${escapeHtml(timeStr)}</span>
+          </div>
+          <div class="orig-text text-xl sm:text-2xl font-bold text-slate-900 leading-snug break-words select-text">${escapeHtml(text)}</div>
+          <div class="orig-pinyin text-sm text-slate-500 font-mono mt-1 leading-relaxed break-words select-text hidden"></div>
+          <div class="output-area mt-2.5 pt-2.5 border-t border-slate-100 hidden"></div>
+        `;
+
+        // ライブ認識中プレビューの直前に挿入
+        if (el.transcriptList && el.interimPreview) {
+          el.transcriptList.insertBefore(card, el.interimPreview);
+        } else if (el.transcriptList) {
+          el.transcriptList.appendChild(card);
+        }
+
+        if (mode === 'tw-practice') {
+          const py = getPinyin(text);
+          const pyEl = card.querySelector('.orig-pinyin');
+          if (py && pyEl) {
+            pyEl.textContent = py;
+            pyEl.classList.remove('hidden');
+          }
+        } else {
+          runTranslationForCard(text, mode, card);
+        }
+
+        scrollToBottom(shouldScroll);
+        updateScrollButtonVisibility();
+      }
+
+      async function runTranslationForCard(text, mode, card) {
+        const outputArea = card.querySelector('.output-area');
+        if (!outputArea) return;
+
+        outputArea.classList.remove('hidden');
+
+        // 未保存のAPIキーが入力欄にあれば自動保存
+        const typedKey = cleanApiKey(el.apiKeyInput ? el.apiKeyInput.value : '');
+        if (typedKey && typedKey !== apiKey) {
+          saveApiKeyEverywhere(typedKey);
+        }
+        const activeKey = apiKey;
+
+        if (!activeKey) {
+          renderCardError(
+            outputArea,
+            'APIキー未設定（右上の「⚙️ 設定」から保存してください）',
+            text,
+            mode,
+            card
+          );
+          return;
+        }
+
+        const prompt = buildPromptForMode(text, mode);
+
+        try {
+          const { text: translatedText, model: usedModel } = await callGeminiFast(
+            prompt,
+            activeKey,
+            (statusLabel) => {
+              const shouldScroll = isNearBottom();
+              const isCompact = el.modeSelect && el.modeSelect.value === 'tw-translate';
+              const displayLabel = isCompact ? '翻訳中...' : statusLabel;
+              outputArea.innerHTML = `
+                <div class="translating-row flex items-center gap-2 text-xs sm:text-sm font-medium text-slate-500">
+                  <span class="spinner" aria-hidden="true"></span>
+                  <span class="truncate">${escapeHtml(displayLabel)}</span>
+                </div>
+              `;
+              scrollToBottom(shouldScroll);
+            }
+          );
+
+          const shouldScroll = isNearBottom();
+          let html = `
+            <div class="trans-text text-base sm:text-lg font-bold text-[#1a56db] leading-relaxed break-words select-text">
+              ${escapeHtml(translatedText)}
+            </div>
+          `;
+
+          if (mode === 'jp-to-tw') {
+            const py = getPinyin(translatedText);
+            if (py) {
+              html += `
+                <div class="trans-pinyin text-sm text-slate-500 font-mono mt-1 leading-relaxed break-words select-text">
+                  ${escapeHtml(py)}
+                </div>
+              `;
+            }
+          }
+
+          html += `
+            <div class="model-badge-row mt-2 flex justify-end">
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 text-slate-500 text-[10px] font-semibold">
+                <span aria-hidden="true">⚡</span>
+                <span>${escapeHtml(usedModel)}</span>
+              </span>
+            </div>
+          `;
+
+          outputArea.innerHTML = html;
+          scrollToBottom(shouldScroll);
+          updateScrollButtonVisibility();
+        } catch (err) {
+          renderCardError(outputArea, err.message || '翻訳に失敗しました', text, mode, card);
+        }
+      }
+
+      function renderCardError(outputArea, errorMsg, originalText, mode, card) {
+        const shouldScroll = isNearBottom();
+        outputArea.innerHTML = `
+          <div class="error-box bg-rose-50 border border-rose-200 rounded-xl p-2.5 space-y-1.5">
+            <div class="error-msg text-xs sm:text-sm font-semibold text-rose-700 leading-relaxed break-words">
+              ⚠️ ${escapeHtml(errorMsg)}
+            </div>
+            <button
+              type="button"
+              class="card-retry-btn inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-rose-300 text-rose-700 hover:bg-rose-100 active:scale-[0.98] text-xs font-bold shadow-sm transition cursor-pointer shrink-0"
+            >
+              🔄再試行
+            </button>
+          </div>
+        `;
+
+        const retryBtn = outputArea.querySelector('.card-retry-btn');
+        if (retryBtn) {
+          retryBtn.addEventListener('click', () => {
+            runTranslationForCard(originalText, mode, card);
+          });
+        }
+        scrollToBottom(shouldScroll);
+        updateScrollButtonVisibility();
+      }
+
+      function updateInterimPreview(text) {
+        if (!el.interimPreview || !el.interimPreviewText) return;
+        const trimmed = String(text || '').trim();
+        const shouldScroll = isNearBottom();
+
+        if (trimmed) {
+          if (el.emptyStateCard) el.emptyStateCard.classList.add('hidden');
+          el.interimPreviewText.textContent = trimmed;
+          el.interimPreview.classList.remove('hidden');
+          scrollToBottom(shouldScroll);
+        } else {
+          el.interimPreviewText.textContent = '';
+          el.interimPreview.classList.add('hidden');
+        }
+      }
+
+      // =========================================================
+      // 9. Web Speech API 音声認識ロジック
+      // =========================================================
+
+      function createSpeechRecognition() {
+        const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SR) return null;
+
+        const rec = new SR();
+        rec.continuous = false;
+        rec.interimResults = true;
+
+        rec.onstart = () => {
+          setRecordingButtonUI(true);
+        };
+
+        rec.onresult = (event) => {
+          let interimText = '';
+          let finalText = '';
+
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            const part = event.results[i][0] ? event.results[i][0].transcript : '';
+            if (event.results[i].isFinal) {
+              finalText += part;
+            } else {
+              interimText += part;
+            }
+          }
+
+          const currentMode = el.modeSelect ? el.modeSelect.value : 'tw-practice';
+
+          if (finalText.trim() !== '') {
+            updateInterimPreview('');
+            appendFinalUtterance(finalText.trim(), currentMode);
+          } else {
+            updateInterimPreview(interimText);
+          }
+        };
+
+        rec.onerror = (event) => {
+          const code = event ? event.error : '';
+          if (code === 'not-allowed' || code === 'service-not-allowed') {
+            stopRecordingSession();
+            showToast('マイクが拒否されています。ブラウザの設定からマイクを許可してください。');
+          } else if (code === 'audio-capture') {
+            stopRecordingSession();
+            showToast('マイクを検出できませんでした。端末のマイク設定をご確認ください。');
+          }
+        };
+
+        rec.onend = () => {
+          updateInterimPreview('');
+          if (isRecording) {
+            if (restartTimer) clearTimeout(restartTimer);
+            restartTimer = setTimeout(() => {
+              if (!isRecording || !recognition) return;
+              try {
+                applyRecognitionLanguage();
+                recognition.start();
+              } catch (e) {}
+            }, 150);
+          } else {
+            setRecordingButtonUI(false);
+          }
+        };
+
+        return rec;
+      }
+
+      function applyRecognitionLanguage() {
+        if (!recognition || !el.modeSelect) return;
+        const meta = MODE_META[el.modeSelect.value] || MODE_META['tw-practice'];
+        recognition.lang = meta.lang;
+      }
+
+      function setRecordingButtonUI(active) {
+        if (!el.micBtn || !el.micBtnIcon || !el.micBtnLabel) return;
+        if (active) {
+          el.micBtn.classList.remove('bg-[#16a34a]', 'hover:bg-[#15803d]');
+          el.micBtn.classList.add('bg-rose-600', 'hover:bg-rose-700', 'recording-pulse');
+          el.micBtnIcon.textContent = '⏹';
+          el.micBtnLabel.textContent = '録音停止（聞き取り中...）';
+        } else {
+          el.micBtn.classList.remove('bg-rose-600', 'hover:bg-rose-700', 'recording-pulse');
+          el.micBtn.classList.add('bg-[#16a34a]', 'hover:bg-[#15803d]');
+          el.micBtnIcon.textContent = '🎤';
+          el.micBtnLabel.textContent = '録音開始';
+        }
+      }
+
+      function startRecordingSession() {
+        // 録音開始前に入力欄のAPIキーを4重ストレージへ自動保存（権限ダイアログ時の消失対策）
+        if (el.apiKeyInput) {
+          const currentInputKey = cleanApiKey(el.apiKeyInput.value);
+          if (currentInputKey) saveApiKeyEverywhere(currentInputKey);
+          else if (apiKey) saveApiKeyEverywhere(apiKey);
+        }
+
+        if (!recognition) recognition = createSpeechRecognition();
+        if (!recognition) {
+          showToast('このブラウザは音声認識に非対応です。AndroidのGoogle Chrome等をお使いください。');
+          return;
+        }
+
+        if (restartTimer) {
+          clearTimeout(restartTimer);
+          restartTimer = null;
+        }
+
+        isRecording = true;
+        applyRecognitionLanguage();
+        try {
+          recognition.start();
+          setRecordingButtonUI(true);
+        } catch (err) {
+          isRecording = false;
+          setRecordingButtonUI(false);
+          showToast('録音を開始できませんでした。もう一度タップしてください。');
+        }
+      }
+
+      function stopRecordingSession() {
+        isRecording = false;
+        if (restartTimer) {
+          clearTimeout(restartTimer);
+          restartTimer = null;
+        }
+        if (recognition) {
+          try { recognition.stop(); } catch (e) {}
+        }
+        updateInterimPreview('');
+        setRecordingButtonUI(false);
+      }
+
+      // =========================================================
+      // 10. クリップボードコピー（iFrame対応 execCommand 優先）
+      // =========================================================
+
+      function copyTextSafely(text) {
+        let copied = false;
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.setAttribute('readonly', '');
+          ta.style.position = 'fixed';
+          ta.style.top = '-9999px';
+          ta.style.left = '-9999px';
+          document.body.appendChild(ta);
+          ta.focus();
+          ta.select();
+          ta.setSelectionRange(0, ta.value.length);
+          copied = document.execCommand('copy');
+          document.body.removeChild(ta);
+        } catch (e) {
+          copied = false;
+        }
+
+        if (copied) {
+          showToast('会話履歴をすべてコピーしました');
+          return;
+        }
+
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+          navigator.clipboard.writeText(text)
+            .then(() => showToast('会話履歴をすべてコピーしました'))
+            .catch(() => showToast('コピーに失敗しました'));
+        } else {
+          showToast('コピーに失敗しました');
+        }
+      }
+
+      // =========================================================
+      // 11. イベントバインド & 初期化
+      // =========================================================
+
+      function bindEvents() {
+        // 設定ドロワー開閉
+        if (el.settingsToggleBtn && el.apiSettingsDrawer) {
+          el.settingsToggleBtn.addEventListener('click', () => {
+            const isNowHidden = el.apiSettingsDrawer.classList.toggle('hidden');
+            el.settingsToggleBtn.setAttribute('aria-expanded', String(!isNowHidden));
+          });
+        }
+
+        // APIキー表示・非表示切替
+        if (el.toggleKeyEyeBtn && el.apiKeyInput) {
+          el.toggleKeyEyeBtn.addEventListener('click', () => {
+            const isPw = el.apiKeyInput.type === 'password';
+            el.apiKeyInput.type = isPw ? 'text' : 'password';
+            el.toggleKeyEyeBtn.textContent = isPw ? '🙈 隠す' : '👁️ 表示';
+          });
+        }
+
+        // 💾 保存ボタン
+        if (el.saveApiBtn && el.apiKeyInput) {
+          el.saveApiBtn.addEventListener('click', () => {
+            const cleaned = cleanApiKey(el.apiKeyInput.value);
+            if (!cleaned) {
+              setInlineStatus('⚠️ APIキーを入力してください。', 'error');
+              showToast('APIキーが空です');
+              return;
+            }
+            saveApiKeyEverywhere(cleaned);
+            setInlineStatus('✅ 4重ストレージに保存しました（前後の空白は自動削除済み）。', 'success');
+            showToast('APIキーを保存しました');
+          });
+        }
+
+        // 🔌 接続テスト＆モデル取得ボタン
+        if (el.testApiBtn) {
+          el.testApiBtn.addEventListener('click', async () => {
+            const candidateKey = cleanApiKey(el.apiKeyInput ? el.apiKeyInput.value : '') || apiKey;
+            if (!candidateKey) {
+              setInlineStatus('⚠️ テストするAPIキーを入力してください。', 'error');
+              showToast('APIキーを入力してください');
+              return;
+            }
+
+            saveApiKeyEverywhere(candidateKey);
+            el.testApiBtn.disabled = true;
+            el.testApiBtn.classList.add('opacity-60');
+            setInlineStatus('🔄 接続テスト中...', 'info');
+
+            try {
+              const { text, model } = await callGeminiFast(
+                'Reply with ONLY the word "OK".',
+                candidateKey,
+                (msg) => setInlineStatus(`🔄 ${msg}`, 'info')
+              );
+
+              let extraInfo = '';
+              try {
+                const models = await discoverModelsViaListApi(candidateKey);
+                if (models.length > 0) extraInfo = ` / 検出モデル: ${models.length}件`;
+              } catch (e) {}
+
+              setInlineStatus(`✅ 接続成功！ 使用モデル: ${model}（応答: ${text}${extraInfo}）`, 'success');
+              showToast(`接続成功 (${model})`);
+            } catch (err) {
+              setInlineStatus(`❌ 接続失敗: ${err.message || 'エラーが発生しました'}`, 'error');
+              showToast('API接続テストに失敗しました');
+            } finally {
+              el.testApiBtn.disabled = false;
+              el.testApiBtn.classList.remove('opacity-60');
+            }
+          });
+        }
+
+        // 🗑️ リセットボタン
+        if (el.resetApiBtn) {
+          el.resetApiBtn.addEventListener('click', () => {
+            saveApiKeyEverywhere('');
+            saveLastWorkingModel('');
+            saveModelOverride('auto');
+            discoveredModels = [];
+            refreshModelDropdown();
+            setInlineStatus('🗑️ APIキーとモデル記憶をすべて消去しました。', 'default');
+            showToast('設定をリセットしました');
+          });
+        }
+
+        // 翻訳AIモデル選択変更
+        if (el.modelSelect) {
+          el.modelSelect.addEventListener('change', () => {
+            saveModelOverride(el.modelSelect.value);
+            const label = el.modelSelect.value === 'auto' ? '自動 (3.5-flash-lite優先)' : el.modelSelect.value;
+            showToast(`モデル設定: ${label}`);
+          });
+        }
+
+        // モード選択変更（高密度モード自動切替＋録音中なら新言語で再起動）
+        if (el.modeSelect) {
+          el.modeSelect.addEventListener('change', () => {
+            applyModeLayout();
+            const meta = MODE_META[el.modeSelect.value];
+            if (meta) showToast(`モード変更: ${meta.pill}`);
+            if (isRecording && recognition) {
+              try { recognition.stop(); } catch (e) {}
+            }
+          });
+        }
+
+        // 高密度モード：原文表示 ON/OFF トグル
+        if (el.toggleOriginalBtn) {
+          el.toggleOriginalBtn.addEventListener('click', () => {
+            showOriginalInCompact = !showOriginalInCompact;
+            safeStoreSet(KEY_SHOW_ORIGINAL, showOriginalInCompact ? 'on' : 'off');
+            applyCompactOptionStyles();
+            updateScrollButtonVisibility();
+            showToast(showOriginalInCompact ? '原文表示: ON' : '原文表示: OFF（日本語訳のみ表示）');
+          });
+        }
+
+        // 高密度モード：文字サイズ 小/中 トグル
+        if (el.toggleFontSizeBtn) {
+          el.toggleFontSizeBtn.addEventListener('click', () => {
+            compactFontSize = compactFontSize === 'sm' ? 'md' : 'sm';
+            safeStoreSet(KEY_COMPACT_SIZE, compactFontSize);
+            applyCompactOptionStyles();
+            updateScrollButtonVisibility();
+            showToast(compactFontSize === 'sm' ? '文字サイズ: 小（最大密度）' : '文字サイズ: 中（標準）');
+          });
+        }
+
+        // スマート自動スクロール監視 & 「↓ 最新へ」ボタン
+        if (el.transcriptScroll) {
+          el.transcriptScroll.addEventListener('scroll', updateScrollButtonVisibility, { passive: true });
+        }
+        if (el.scrollBottomBtn) {
+          el.scrollBottomBtn.addEventListener('click', () => {
+            if (!el.transcriptScroll) return;
+            el.transcriptScroll.scrollTo({
+              top: el.transcriptScroll.scrollHeight,
+              behavior: 'smooth'
+            });
+          });
+        }
+
+        // 🎤 録音開始 / ⏹ 録音停止ボタン
+        if (el.micBtn) {
+          el.micBtn.addEventListener('click', () => {
+            if (isRecording) stopRecordingSession();
+            else startRecordingSession();
+          });
+        }
+
+        // 📋 全コピーボタン
+        if (el.copyBtn) {
+          el.copyBtn.addEventListener('click', () => {
+            if (!el.transcriptList) return;
+            const cards = Array.from(el.transcriptList.querySelectorAll('.utterance-card'));
+            const blocks = cards
+              .filter((c) => c.dataset.finalized === 'true')
+              .map((c) => {
+                const time = c.dataset.time || '';
+                const orig = c.querySelector('.orig-text')?.textContent.trim() || '';
+                const origPy = c.querySelector('.orig-pinyin')?.textContent.trim() || '';
+                const trans = c.querySelector('.trans-text')?.textContent.trim() || '';
+                const transPy = c.querySelector('.trans-pinyin')?.textContent.trim() || '';
+
+                const lines = [];
+                if (time) lines.push(`[${time}]`);
+                if (orig) lines.push(orig);
+                if (origPy) lines.push(origPy);
+                if (trans) lines.push(trans);
+                if (transPy) lines.push(transPy);
+                return lines.join('\n');
+              })
+              .filter(Boolean);
+
+            if (blocks.length === 0) {
+              showToast('コピーする確定履歴がありません');
+              return;
+            }
+            copyTextSafely(blocks.join('\n\n'));
+          });
+        }
+
+        // 🗑️ クリアボタン
+        if (el.clearBtn) {
+          el.clearBtn.addEventListener('click', () => {
+            if (!el.transcriptList) return;
+            const cards = el.transcriptList.querySelectorAll('.utterance-card');
+            if (cards.length === 0) {
+              showToast('クリアする履歴がありません');
+              return;
+            }
+            cards.forEach((c) => c.remove());
+            updateInterimPreview('');
+            if (el.emptyStateCard) el.emptyStateCard.classList.remove('hidden');
+            updateScrollButtonVisibility();
+            showToast('会話履歴をクリアしました');
+          });
+        }
+      }
+
+      /**
+       * アプリ初期化
+       */
+      function initApp() {
+        try {
+          el.settingsToggleBtn = document.getElementById('settings-toggle-btn');
+          el.apiStatusPill = document.getElementById('api-status-pill');
+          el.apiSettingsDrawer = document.getElementById('api-settings-drawer');
+          el.apiKeyInput = document.getElementById('api-key-input');
+          el.toggleKeyEyeBtn = document.getElementById('toggle-key-eye-btn');
+          el.saveApiBtn = document.getElementById('save-api-btn');
+          el.testApiBtn = document.getElementById('test-api-btn');
+          el.resetApiBtn = document.getElementById('reset-api-btn');
+          el.modelSelect = document.getElementById('model-select');
+          el.stickyModelHint = document.getElementById('sticky-model-hint');
+          el.apiInlineStatus = document.getElementById('api-inline-status');
+          el.modeSelect = document.getElementById('mode-select');
+          el.compactOptionsBar = document.getElementById('compact-options-bar');
+          el.toggleOriginalBtn = document.getElementById('toggle-original-btn');
+          el.toggleFontSizeBtn = document.getElementById('toggle-fontsize-btn');
+          el.transcriptScroll = document.getElementById('transcript-scroll');
+          el.transcriptList = document.getElementById('transcript-list');
+          el.emptyStateCard = document.getElementById('empty-state-card');
+          el.emptyStateTitle = document.getElementById('empty-state-title');
+          el.emptyStateDesc = document.getElementById('empty-state-desc');
+          el.interimPreview = document.getElementById('interim-preview');
+          el.interimPreviewText = document.getElementById('interim-preview-text');
+          el.scrollBottomBtn = document.getElementById('scroll-bottom-btn');
+          el.micBtn = document.getElementById('mic-btn');
+          el.micBtnIcon = document.getElementById('mic-btn-icon');
+          el.micBtnLabel = document.getElementById('mic-btn-label');
+          el.copyBtn = document.getElementById('copy-btn');
+          el.clearBtn = document.getElementById('clear-btn');
+          el.toast = document.getElementById('toast');
+
+          loadPersistedSettings();
+          applyModeLayout();
+          recognition = createSpeechRecognition();
+          bindEvents();
+        } catch (err) {
+          showToast('初期化エラー: ' + (err && err.message ? err.message : '不明なエラー'));
+        }
+      }
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initApp);
+      } else {
+        initApp();
+      }
+    })();
+  </script>
+</body>
+</html>
