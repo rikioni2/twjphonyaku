@@ -342,7 +342,7 @@
               id="toggle-original-btn"
               class="px-2 py-1 rounded-lg font-bold border transition cursor-pointer bg-blue-600 text-white border-blue-600"
             >
-              原文表示: ON
+              原文: ON
             </button>
             <button
               type="button"
@@ -410,6 +410,10 @@
         >
           <span id="mic-btn-icon" aria-hidden="true">🎤</span>
           <span id="mic-btn-label">録音開始</span>
+          <span
+            id="rec-state-badge"
+            class="hidden px-2 py-0.5 rounded-full bg-white/20 text-white text-[11px] font-semibold tracking-wide"
+          >聞き取り中...</span>
         </button>
 
         <!-- セカンダリボタン行（全コピー・クリア） -->
@@ -466,6 +470,14 @@
 
       const FETCH_TIMEOUT_MS = 6000;
       const AUTO_SCROLL_THRESHOLD_PX = 80;
+      // Android Chrome 音声認識安定化パラメータ
+      const INTERIM_WATCHDOG_MS = 3500;
+      const RESTART_COOLDOWN_MS = 280;
+      const DEDUP_WINDOW_MS = 1500;
+      const ERROR_RETRY_BASE_MS = 500;
+      const ERROR_RETRY_MAX_MS = 2000;
+      const STABLE_SESSION_MS = 2000;
+
       const DEFAULT_MODEL_PRIORITY = [
         'gemini-3.5-flash-lite',
         'gemini-3.5-flash',
@@ -517,8 +529,25 @@
       let compactFontSize = 'md'; // 'md' | 'sm'
       let discoveredModels = [];
       let recognition = null;
+
+      // 録音ON状態（ユーザー意図）と実際の認識エンジン稼働状態を厳密分離
       let isRecording = false;
+      let isRecognizing = false;
+
+      // 仮テキスト救済・二重確定防止・自動復帰用の状態
+      let sessionFinalized = false;
+      let sessionMode = 'tw-practice';
+      let lastInterimText = '';
+      let bestInterimText = '';
+      let lastFinalizedText = '';
+      let lastFinalizedAt = 0;
+      let consecutiveErrorCount = 0;
+      let pendingRetryDelay = 0;
+
+      // タイマーハンドル
       let restartTimer = null;
+      let watchdogTimer = null;
+      let stableSessionTimer = null;
       let toastTimer = null;
 
       // DOM 参照
@@ -531,7 +560,7 @@
       /**
        * pinyin-pro を安全に呼び出すラッパー（CDN遅延・ブロック時もクラッシュゼロ）
        */
-      function getPinyin(text) {
+      function safePinyin(text) {
         try {
           if (window.pinyinPro && typeof window.pinyinPro.pinyin === 'function') {
             return window.pinyinPro.pinyin(text, { toneType: 'symbol' });
@@ -820,7 +849,7 @@
         el.transcriptScroll.classList.toggle('compact-size-sm', compactFontSize === 'sm');
 
         if (el.toggleOriginalBtn) {
-          el.toggleOriginalBtn.textContent = showOriginalInCompact ? '原文表示: ON' : '原文表示: OFF';
+          el.toggleOriginalBtn.textContent = showOriginalInCompact ? '原文: ON' : '原文: OFF';
           if (showOriginalInCompact) {
             el.toggleOriginalBtn.className = 'px-2 py-1 rounded-lg font-bold border transition cursor-pointer bg-blue-600 text-white border-blue-600';
           } else {
@@ -1044,6 +1073,39 @@
       // 8. 会話アイテムの生成・翻訳描画
       // =========================================================
 
+      /**
+       * 1.5秒以内の同一文の二重確定を防止しつつ確定テキストを登録する
+       */
+      function commitFinalUtterance(text, mode) {
+        const cleaned = String(text || '').trim();
+        if (!cleaned) return false;
+
+        const now = Date.now();
+        if (cleaned === lastFinalizedText && (now - lastFinalizedAt) < DEDUP_WINDOW_MS) {
+          return false;
+        }
+
+        lastFinalizedText = cleaned;
+        lastFinalizedAt = now;
+        appendFinalUtterance(cleaned, mode);
+        return true;
+      }
+
+      /**
+       * 空のまま残った一時プレビューや未確定ゴミブロックをDOMから安全に掃除する
+       */
+      function cleanupEmptyTemporaryBlocks() {
+        updateInterimPreview('');
+        if (!el.transcriptList) return;
+        const cards = el.transcriptList.querySelectorAll('.utterance-card');
+        cards.forEach((card) => {
+          const orig = card.querySelector('.orig-text')?.textContent.trim() || '';
+          if (!orig || card.dataset.finalized !== 'true') {
+            card.remove();
+          }
+        });
+      }
+
       function appendFinalUtterance(text, mode) {
         const shouldScroll = isNearBottom();
 
@@ -1079,7 +1141,7 @@
         }
 
         if (mode === 'tw-practice') {
-          const py = getPinyin(text);
+          const py = safePinyin(text);
           const pyEl = card.querySelector('.orig-pinyin');
           if (py && pyEl) {
             pyEl.textContent = py;
@@ -1145,7 +1207,7 @@
           `;
 
           if (mode === 'jp-to-tw') {
-            const py = getPinyin(translatedText);
+            const py = safePinyin(translatedText);
             if (py) {
               html += `
                 <div class="trans-pinyin text-sm text-slate-500 font-mono mt-1 leading-relaxed break-words select-text">
@@ -1215,8 +1277,161 @@
       }
 
       // =========================================================
-      // 9. Web Speech API 音声認識ロジック
+      // 9. Web Speech API 音声認識ロジック（Android Chrome 安定化版）
       // =========================================================
+
+      /**
+       * 保留中の再起動・ウォッチドッグ・安定化タイマーをすべて安全に解除する
+       */
+      function clearAllRecognitionTimers() {
+        if (restartTimer) {
+          clearTimeout(restartTimer);
+          restartTimer = null;
+        }
+        if (watchdogTimer) {
+          clearTimeout(watchdogTimer);
+          watchdogTimer = null;
+        }
+        if (stableSessionTimer) {
+          clearTimeout(stableSessionTimer);
+          stableSessionTimer = null;
+        }
+      }
+
+      /**
+       * 最新の仮テキストとノイズ取り消し前の最良仮テキストから救済対象を選ぶ
+       */
+      function getRescueInterimText() {
+        const last = String(lastInterimText || '').trim();
+        const best = String(bestInterimText || '').trim();
+        if (last && (!best || last.length >= Math.floor(best.length * 0.6))) {
+          return last;
+        }
+        return best || last;
+      }
+
+      /**
+       * 未確定のまま終了・停止した際に仮テキストを破棄せず救済確定する
+       */
+      function rescuePendingInterimIfNeeded() {
+        if (sessionFinalized) return false;
+        const rescueText = getRescueInterimText();
+        lastInterimText = '';
+        bestInterimText = '';
+        if (!rescueText) return false;
+
+        sessionFinalized = true;
+        const targetMode = sessionMode || (el.modeSelect ? el.modeSelect.value : 'tw-practice');
+        return commitFinalUtterance(rescueText, targetMode);
+      }
+
+      /**
+       * 仮テキストが3.5秒以上更新停止した場合に強制確定→再接続させるウォッチドッグ
+       */
+      function resetInterimWatchdog() {
+        if (watchdogTimer) {
+          clearTimeout(watchdogTimer);
+          watchdogTimer = null;
+        }
+        if (!isRecording || sessionFinalized) return;
+
+        watchdogTimer = setTimeout(() => {
+          watchdogTimer = null;
+          if (!isRecording || sessionFinalized) return;
+
+          const hasPending = Boolean(getRescueInterimText());
+          if (!hasPending) return;
+
+          if (recognition && isRecognizing) {
+            try {
+              recognition.stop();
+              return;
+            } catch (e) {}
+          }
+
+          // stop() が呼べない状態でも取りこぼさず直接救済して再開する
+          rescuePendingInterimIfNeeded();
+          cleanupEmptyTemporaryBlocks();
+          isRecognizing = false;
+          scheduleRecognitionRestart(RESTART_COOLDOWN_MS, false);
+        }, INTERIM_WATCHDOG_MS);
+      }
+
+      /**
+       * 録音ボタンの見た目とさりげない状態表示（聞き取り中 / 認識中 / 再接続中）を更新
+       */
+      function updateRecStateUI(state) {
+        if (!el.micBtn || !el.micBtnIcon || !el.micBtnLabel) return;
+
+        if (state === 'idle') {
+          el.micBtn.classList.remove('bg-rose-600', 'hover:bg-rose-700', 'recording-pulse');
+          el.micBtn.classList.add('bg-[#16a34a]', 'hover:bg-[#15803d]');
+          el.micBtnIcon.textContent = '🎤';
+          el.micBtnLabel.textContent = '録音開始';
+          if (el.recStateBadge) el.recStateBadge.classList.add('hidden');
+          return;
+        }
+
+        el.micBtn.classList.remove('bg-[#16a34a]', 'hover:bg-[#15803d]');
+        el.micBtn.classList.add('bg-rose-600', 'hover:bg-rose-700', 'recording-pulse');
+        el.micBtnIcon.textContent = '⏹';
+        el.micBtnLabel.textContent = '録音停止';
+
+        if (el.recStateBadge) {
+          el.recStateBadge.classList.remove('hidden');
+          if (state === 'recognizing') {
+            el.recStateBadge.textContent = '認識中...';
+          } else if (state === 'reconnecting') {
+            el.recStateBadge.textContent = '再接続中...';
+          } else {
+            el.recStateBadge.textContent = '聞き取り中...';
+          }
+        }
+      }
+
+      /**
+       * クールタイム / バックオフ待機後に安全に音声認識を再開する（多重start防止）
+       */
+      function scheduleRecognitionRestart(delayMs, isRecovery) {
+        if (restartTimer) {
+          clearTimeout(restartTimer);
+          restartTimer = null;
+        }
+        if (!isRecording) return;
+
+        if (isRecovery) {
+          updateRecStateUI('reconnecting');
+        }
+
+        const safeDelay = Math.max(RESTART_COOLDOWN_MS, Number(delayMs) || RESTART_COOLDOWN_MS);
+        restartTimer = setTimeout(() => {
+          restartTimer = null;
+          if (!isRecording) return;
+          if (isRecognizing) return;
+
+          if (!recognition) recognition = createSpeechRecognition();
+          if (!recognition) {
+            stopRecordingSession(false);
+            return;
+          }
+
+          sessionFinalized = false;
+          lastInterimText = '';
+          bestInterimText = '';
+          sessionMode = el.modeSelect ? el.modeSelect.value : 'tw-practice';
+          applyRecognitionLanguage();
+
+          try {
+            recognition.start();
+          } catch (err) {
+            // マイク解放待ちや InvalidStateError 時は停止せずバックオフ再試行
+            isRecognizing = false;
+            consecutiveErrorCount++;
+            const nextDelay = Math.min(ERROR_RETRY_MAX_MS, ERROR_RETRY_BASE_MS * consecutiveErrorCount);
+            scheduleRecognitionRestart(nextDelay, true);
+          }
+        }, safeDelay);
+      }
 
       function createSpeechRecognition() {
         const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -1227,10 +1442,24 @@
         rec.interimResults = true;
 
         rec.onstart = () => {
-          setRecordingButtonUI(true);
+          isRecognizing = true;
+          sessionFinalized = false;
+          lastInterimText = '';
+          bestInterimText = '';
+          sessionMode = el.modeSelect ? el.modeSelect.value : 'tw-practice';
+          updateRecStateUI('listening');
+
+          // 一定時間安定稼働したら連続エラー回数をリセット
+          if (stableSessionTimer) clearTimeout(stableSessionTimer);
+          stableSessionTimer = setTimeout(() => {
+            stableSessionTimer = null;
+            if (isRecognizing) consecutiveErrorCount = 0;
+          }, STABLE_SESSION_MS);
         };
 
         rec.onresult = (event) => {
+          consecutiveErrorCount = 0;
+
           let interimText = '';
           let finalText = '';
 
@@ -1241,6 +1470,155 @@
             } else {
               interimText += part;
             }
+          }
+
+          const targetMode = sessionMode || (el.modeSelect ? el.modeSelect.value : 'tw-practice');
+          const trimmedFinal = finalText.trim();
+          const trimmedInterim = interimText.trim();
+
+          if (trimmedFinal !== '') {
+            if (watchdogTimer) {
+              clearTimeout(watchdogTimer);
+              watchdogTimer = null;
+            }
+            sessionFinalized = true;
+            lastInterimText = '';
+            bestInterimText = '';
+            updateInterimPreview('');
+            commitFinalUtterance(trimmedFinal, targetMode);
+          } else if (trimmedInterim !== '') {
+            lastInterimText = trimmedInterim;
+            // ノイズ判定で極端に削られる前の有効テキストを保持
+            if (!bestInterimText || trimmedInterim.length >= Math.floor(bestInterimText.length * 0.5)) {
+              bestInterimText = trimmedInterim;
+            }
+            updateRecStateUI('recognizing');
+            updateInterimPreview(trimmedInterim);
+            resetInterimWatchdog();
+          } else {
+            // エンジン側がノイズ判定で一時的に文字を引っ込めた場合も bestInterimText は保持
+            lastInterimText = '';
+          }
+        };
+
+        rec.onerror = (event) => {
+          const code = event ? event.error : '';
+
+          if (code === 'not-allowed' || code === 'service-not-allowed') {
+            stopRecordingSession(false);
+            showToast('マイクが拒否されています。ブラウザの設定からマイクを許可してください。');
+            return;
+          }
+
+          // その他のエラー（no-speech / aborted / network / audio-capture 等）は録音停止せず自動復帰
+          if (!isRecording) return;
+
+          consecutiveErrorCount++;
+          const retryDelay = Math.min(ERROR_RETRY_MAX_MS, ERROR_RETRY_BASE_MS * consecutiveErrorCount);
+          pendingRetryDelay = retryDelay;
+          updateRecStateUI('reconnecting');
+
+          // onend が発火しない環境でも復帰できるよう、未稼働ならここで再起動を予約
+          if (!isRecognizing) {
+            scheduleRecognitionRestart(retryDelay, true);
+          }
+        };
+
+        rec.onend = () => {
+          isRecognizing = false;
+          if (watchdogTimer) {
+            clearTimeout(watchdogTimer);
+            watchdogTimer = null;
+          }
+          if (stableSessionTimer) {
+            clearTimeout(stableSessionTimer);
+            stableSessionTimer = null;
+          }
+
+          // isFinal が出ないまま終了した場合も、仮テキストがあれば救済確定する
+          rescuePendingInterimIfNeeded();
+          cleanupEmptyTemporaryBlocks();
+
+          if (isRecording) {
+            const delay = pendingRetryDelay > 0 ? pendingRetryDelay : RESTART_COOLDOWN_MS;
+            const isRecovery = pendingRetryDelay > 0;
+            pendingRetryDelay = 0;
+            scheduleRecognitionRestart(delay, isRecovery);
+          } else {
+            pendingRetryDelay = 0;
+            updateRecStateUI('idle');
+          }
+        };
+
+        return rec;
+      }
+
+      function applyRecognitionLanguage() {
+        if (!recognition || !el.modeSelect) return;
+        const meta = MODE_META[el.modeSelect.value] || MODE_META['tw-practice'];
+        recognition.lang = meta.lang;
+      }
+
+      function startRecordingSession() {
+        // 録音開始前に入力欄のAPIキーを4重ストレージへ自動保存（権限ダイアログ時の消失対策）
+        if (el.apiKeyInput) {
+          const currentInputKey = cleanApiKey(el.apiKeyInput.value);
+          if (currentInputKey) saveApiKeyEverywhere(currentInputKey);
+          else if (apiKey) saveApiKeyEverywhere(apiKey);
+        }
+
+        if (!recognition) recognition = createSpeechRecognition();
+        if (!recognition) {
+          showToast('このブラウザは音声認識に非対応です。AndroidのGoogle Chrome等をお使いください。');
+          return;
+        }
+
+        clearAllRecognitionTimers();
+        consecutiveErrorCount = 0;
+        pendingRetryDelay = 0;
+        isRecording = true;
+
+        if (isRecognizing) {
+          updateRecStateUI('listening');
+          return;
+        }
+
+        sessionFinalized = false;
+        lastInterimText = '';
+        bestInterimText = '';
+        sessionMode = el.modeSelect ? el.modeSelect.value : 'tw-practice';
+        applyRecognitionLanguage();
+
+        try {
+          recognition.start();
+          updateRecStateUI('listening');
+        } catch (err) {
+          // 既に稼働中・直前の解放待ちなら自動再接続にフォールバック
+          isRecognizing = false;
+          scheduleRecognitionRestart(RESTART_COOLDOWN_MS, true);
+        }
+      }
+
+      function stopRecordingSession(shouldRescue) {
+        const rescue = shouldRescue !== false;
+        isRecording = false;
+        pendingRetryDelay = 0;
+        consecutiveErrorCount = 0;
+        clearAllRecognitionTimers();
+
+        if (rescue) {
+          rescuePendingInterimIfNeeded();
+        } else {
+          lastInterimText = '';
+          bestInterimText = '';
+        }
+
+        if (recognition && isRecognizing) {
+          try { recognition.stop(); } catch (e) {}
+        }
+        cleanupEmptyTemporaryBlocks();
+        updateRecStateUI('idle');
+      }
           }
 
           const currentMode = el.modeSelect ? el.modeSelect.value : 'tw-practice';
@@ -1436,28 +1814,28 @@
             el.testApiBtn.disabled = true;
             el.testApiBtn.classList.add('opacity-60');
             setInlineStatus('🔄 接続テスト中...', 'info');
+        // モード選択変更（高密度モード自動切替＋録音中なら安全停止して新言語で自動再開）
+        if (el.modeSelect) {
+          el.modeSelect.addEventListener('change', () => {
+            applyModeLayout();
+            const meta = MODE_META[el.modeSelect.value];
+            if (meta) showToast(`モード変更: ${meta.pill}`);
 
-            try {
-              const { text, model } = await callGeminiFast(
-                'Reply with ONLY the word "OK".',
-                candidateKey,
-                (msg) => setInlineStatus(`🔄 ${msg}`, 'info')
-              );
+            if (isRecording) {
+              clearAllRecognitionTimers();
+              pendingRetryDelay = 0;
+              updateRecStateUI('reconnecting');
 
-              let extraInfo = '';
-              try {
-                const models = await discoverModelsViaListApi(candidateKey);
-                if (models.length > 0) extraInfo = ` / 検出モデル: ${models.length}件`;
-              } catch (e) {}
-
-              setInlineStatus(`✅ 接続成功！ 使用モデル: ${model}（応答: ${text}${extraInfo}）`, 'success');
-              showToast(`接続成功 (${model})`);
-            } catch (err) {
-              setInlineStatus(`❌ 接続失敗: ${err.message || 'エラーが発生しました'}`, 'error');
-              showToast('API接続テストに失敗しました');
-            } finally {
-              el.testApiBtn.disabled = false;
-              el.testApiBtn.classList.remove('opacity-60');
+              if (recognition && isRecognizing) {
+                try {
+                  recognition.stop();
+                } catch (e) {
+                  isRecognizing = false;
+                  scheduleRecognitionRestart(RESTART_COOLDOWN_MS, false);
+                }
+              } else {
+                scheduleRecognitionRestart(RESTART_COOLDOWN_MS, false);
+              }
             }
           });
         }
@@ -1621,6 +1999,7 @@
           el.micBtn = document.getElementById('mic-btn');
           el.micBtnIcon = document.getElementById('mic-btn-icon');
           el.micBtnLabel = document.getElementById('mic-btn-label');
+          el.recStateBadge = document.getElementById('rec-state-badge');
           el.copyBtn = document.getElementById('copy-btn');
           el.clearBtn = document.getElementById('clear-btn');
           el.toast = document.getElementById('toast');
