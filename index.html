@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <!-- pinyin-pro (非同期読込・安全ヘルパー関数経由でのみ参照) -->
+  <!-- pinyin-pro (非同期読込・安全ラッパー経由でのみ参照) -->
   <script src="https://unpkg.com/pinyin-pro" async></script>
   <style>
     /* ベースレイアウト（モバイル 100dvh 対応） */
@@ -29,7 +29,7 @@
 
     /* 録音中パルスアニメーション */
     @keyframes pulse-ring {
-      0% { box-shadow: 0 0 0 0 rgba(225, 29, 72, 0.5); }
+      0% { box-shadow: 0 0 0 0 rgba(225, 29, 72, 0.48); }
       70% { box-shadow: 0 0 0 10px rgba(225, 29, 72, 0); }
       100% { box-shadow: 0 0 0 0 rgba(225, 29, 72, 0); }
     }
@@ -153,6 +153,7 @@
       font-size: 11px;
       border-radius: 5px;
     }
+
     /* 高密度モード：文字サイズ「小」（一覧性最大） */
     #transcript-scroll.compact-mode.compact-size-sm .utterance-card {
       padding: 5px 10px;
@@ -173,6 +174,7 @@
       font-size: 13px;
       line-height: 1.28;
     }
+
     /* 高密度モード：文字サイズ「大」（老眼対応・高コントラスト） */
     #transcript-scroll.compact-mode.compact-size-lg .utterance-card {
       padding: 10px 12px;
@@ -211,6 +213,7 @@
       font-size: 18px;
       line-height: 1.4;
     }
+
     /* 高密度モード：仮テキストプレビュー */
     #transcript-scroll.compact-mode #interim-preview {
       border-radius: 0;
@@ -238,7 +241,7 @@
     <header class="bg-white border-b border-slate-200/90 px-3 pt-2.5 pb-2 shadow-sm shrink-0 z-20">
       <div class="max-w-2xl mx-auto space-y-2">
 
-        <!-- タイトル & 設定ボタン行 -->
+        <!-- タイトル & 設定ボタン行（スマホ幅でも1行に綺麗に収まる構成） -->
         <div class="flex items-center justify-between gap-2">
           <div class="flex items-center gap-1.5 min-w-0">
             <span class="text-base sm:text-lg shrink-0" aria-hidden="true">🇹🇼</span>
@@ -270,7 +273,7 @@
           class="hidden bg-slate-50 border border-slate-200 rounded-2xl p-3 space-y-2.5 max-h-[60vh] overflow-y-auto"
           aria-label="API設定"
         >
-          <!-- 端末自動判定ステータス -->
+          <!-- 端末自動判定プロファイル -->
           <div class="flex items-center justify-between gap-2 bg-white border border-slate-200 rounded-xl px-2.5 py-1.5">
             <span class="text-[11px] font-bold text-slate-600">動作環境プロファイル</span>
             <span
@@ -321,7 +324,7 @@
                 id="model-select"
                 class="w-full appearance-none bg-white border border-slate-300 text-slate-800 font-semibold text-xs sm:text-sm rounded-xl px-3 py-2 pr-8 focus:outline-none focus:ring-2 focus:ring-blue-500 transition cursor-pointer"
               >
-                <option value="auto">自動（高速・最優先）</option>
+                <option value="auto">自動（最速優先）</option>
               </select>
               <span class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-slate-500 text-xs">
                 ▼
@@ -380,7 +383,7 @@
           </span>
         </div>
 
-        <!-- 高密度モード専用ツールバー (tw-translate 選択時のみ表示) -->
+        <!-- 高密度モード専用 表示設定バー (tw-translate 選択時のみ表示) -->
         <div
           id="compact-options-bar"
           class="hidden flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-xl bg-slate-100 border border-slate-200/80 text-xs flex-wrap"
@@ -458,7 +461,7 @@
         </div>
       </main>
 
-      <!-- 上へスクロール中に表示される「↓ 最新へ」ボタン -->
+      <!-- 手動スクロール中に表示される「↓ 最新へ」ボタン -->
       <button
         type="button"
         id="scroll-bottom-btn"
@@ -519,7 +522,7 @@
 
   </div>
 
-  <!-- フローティングトースト通知（pointer-events-none でタップ妨害なし / alert・confirm 不使用） -->
+  <!-- カスタムトースト通知（alert / confirm 不使用・pointer-events-none でタップ妨害なし） -->
   <div
     id="toast"
     role="status"
@@ -530,15 +533,15 @@
 
   <script>
     /**
-     * 台湾華語トランスクライバー Pro - メインアプリケーションスクリプト
-     * すべての外部API・ストレージ・外部ライブラリ参照を個別 try/catch で保護し、
-     * Android Chrome / iPhone Safari 両方で安定動作する単一ファイル実装。
+     * 台湾華語　練習アプリby川本 - メインスクリプト
+     * 構文エラー・重複コードを一切排除し、すべての外部API・ストレージ・ライブラリ参照を
+     * 個別 try/catch で保護した Android Chrome / iPhone Safari 両対応の単一ファイル実装。
      */
     (function () {
       'use strict';
 
       // =========================================================
-      // 1. 環境判定・定数・モード定義
+      // 1. 端末判定・定数・4モード定義
       // =========================================================
       const isIOS = (function () {
         try {
@@ -552,7 +555,7 @@
       })();
 
       const WINDOW_NAME_PREFIX = 'TW_TRANSCRIBER_PRO::';
-      const STORAGE_PREFIX = 'tw_transcriber_pro_v7_';
+      const STORAGE_PREFIX = 'tw_transcriber_pro_v8_';
       const KEY_API = STORAGE_PREFIX + 'api_key';
       const KEY_STICKY_MODEL = STORAGE_PREFIX + 'sticky_model';
       const KEY_MODEL_OVERRIDE = STORAGE_PREFIX + 'model_override';
@@ -596,7 +599,7 @@
           pill: '台湾華語→日本語',
           pillClass: 'bg-blue-100 text-blue-800',
           title: '台湾華語（日本語へ翻訳・高密度）モード',
-          desc: '下の『🎤 録音開始』を押して台湾華語を聞き取ると、日本語訳を字幕のように高密度で一覧表示します。上のバーで原文ON/OFFや文字サイズも切り替えられます（要APIキー）。'
+          desc: '下の『🎤 録音開始』を押して台湾華語を聞き取ると、日本語訳を字幕のように高密度で一覧表示します。上のバーで原文ON/OFFや文字サイズ（小・中・大）を切り替えられます（要APIキー）。'
         },
         'jp-to-tw': {
           lang: 'ja-JP',
@@ -626,7 +629,7 @@
       let showOriginal = true;
       let compactSize = 'md'; // 'sm' | 'md' | 'lg'
 
-      // 音声認識の内部状態（ユーザー意図と実稼働状態を分離）
+      // 音声認識の内部状態
       let recognition = null;
       let wantRecording = false;
       let isStarting = false;
@@ -667,7 +670,7 @@
       // =========================================================
 
       /**
-       * pinyin-pro を安全に呼び出す（未読込・遅延・失敗時は空文字を返す）
+       * pinyin-pro を安全に呼び出す（CDN未読込・遅延・失敗時もクラッシュしない）
        */
       function toPinyin(text) {
         try {
@@ -679,7 +682,7 @@
       }
 
       /**
-       * APIキーの前後・途中の余分な空白や改行を除去する
+       * APIキーの前後の空白や改行を除去する
        */
       function normalizeKey(raw) {
         return String(raw || '').trim().replace(/\s+/g, '');
@@ -695,7 +698,7 @@
       }
 
       /**
-       * トースト通知を表示（alert / confirm の代替）
+       * カスタムトースト通知を表示（alert / confirm の完全代替）
        */
       function showToast(message) {
         if (!dom.toast) return;
@@ -719,7 +722,7 @@
       }
 
       // =========================================================
-      // 4. 4重ストレージ保存・復元（個別 try/catch 保護）
+      // 4. 4重ストレージ保存・復元（各層を個別 try/catch 保護）
       // =========================================================
 
       function readWindowNameMap() {
@@ -816,6 +819,7 @@
         // 旧バージョンで保存されたAPIキーも自動引き継ぎ
         apiKey = normalizeKey(
           storageGet(KEY_API) ||
+          storageGet('tw_transcriber_pro_v7_api_key') ||
           storageGet('tw_transcriber_pro_v6_api_key') ||
           storageGet('tw_transcriber_pro_v5_api_key') ||
           storageGet('tw_transcriber_pro_v4_api_key') ||
@@ -827,19 +831,21 @@
 
         stickyModel = (
           storageGet(KEY_STICKY_MODEL) ||
+          storageGet('tw_transcriber_pro_v7_sticky_model') ||
           storageGet('tw_transcriber_pro_v6_sticky_model') ||
           storageGet('tw_transcriber_pro_v5_sticky_model')
         ).trim();
 
         selectedModel = (
           storageGet(KEY_MODEL_OVERRIDE) ||
+          storageGet('tw_transcriber_pro_v7_model_override') ||
           storageGet('tw_transcriber_pro_v6_model_override')
         ).trim() || 'auto';
 
-        const savedOrig = storageGet(KEY_SHOW_ORIGINAL) || storageGet('tw_transcriber_pro_v6_show_original');
+        const savedOrig = storageGet(KEY_SHOW_ORIGINAL) || storageGet('tw_transcriber_pro_v7_show_original');
         showOriginal = savedOrig !== 'off';
 
-        const savedSize = storageGet(KEY_COMPACT_SIZE) || storageGet('tw_transcriber_pro_v6_compact_size');
+        const savedSize = storageGet(KEY_COMPACT_SIZE) || storageGet('tw_transcriber_pro_v7_compact_size');
         compactSize = (savedSize === 'sm' || savedSize === 'lg') ? savedSize : 'md';
 
         if (dom.apiKeyInput && apiKey) {
@@ -919,7 +925,7 @@
         dom.modelSelect.innerHTML = '';
         const autoOpt = document.createElement('option');
         autoOpt.value = 'auto';
-        autoOpt.textContent = '自動（高速・最優先）';
+        autoOpt.textContent = '自動（最速優先）';
         dom.modelSelect.appendChild(autoOpt);
 
         list.forEach((modelName) => {
@@ -959,7 +965,7 @@
       }
 
       /**
-       * 台湾華語（zh-TW）ボイスを最優先選択する（見つからなければ null を返し lang='zh-TW' に委ねる）
+       * 台湾華語（zh-TW）音声を優先選択する
        */
       function getPreferredTwVoice() {
         if (!availableVoices.length) refreshTtsVoices();
@@ -1019,7 +1025,7 @@
       }
 
       /**
-       * クリックイベント内で同期的に台湾華語を再生する（iOS制限・cancel無音バグ・録音競合対策済み）
+       * クリックイベント内で同期的に台湾華語を再生する（iOS無音バグ・録音競合対策済み）
        */
       function speakTaiwanese(text, rate, btn) {
         const cleanText = String(text || '').trim();
@@ -1053,7 +1059,7 @@
           activeTtsBtn = null;
         }
 
-        // iOSのcancel無音バグ防止のため、speaking または pending の場合のみ cancel() を呼ぶ
+        // iOS無音バグ対策：speaking または pending のときのみ cancel() を実行
         try {
           if (synth.speaking || synth.pending) {
             synth.cancel();
@@ -1067,7 +1073,7 @@
             stopRecording(false);
             showToast('発音再生のため録音を停止しました');
           } else if (!wasPausedForTts) {
-            // Android/PCでは再生中のみ一時停止し、終了後に280ms待って自動再開
+            // Android/PCでは再生中のみ一時停止し、終了後に自動再開
             pausedForTTS = true;
             clearRecognitionTimers();
             pendingBackoffMs = 0;
@@ -1221,9 +1227,6 @@
         }
       }
 
-      /**
-       * ListModels から取得したモデル名を優先度スコアで並べる
-       */
       function scoreModelName(name) {
         const lower = String(name || '').toLowerCase();
         let score = 0;
@@ -1241,9 +1244,6 @@
         return score;
       }
 
-      /**
-       * ListModels API で利用可能なテキスト生成モデル一覧を取得する
-       */
       async function discoverAvailableModels(key) {
         const url = 'https://generativelanguage.googleapis.com/v1beta/models?key=' + encodeURIComponent(key);
         const data = await fetchJsonWithTimeout(url, { method: 'GET' }, FETCH_TIMEOUT_MS);
@@ -1267,9 +1267,6 @@
         return valid;
       }
 
-      /**
-       * 翻訳試行順のモデルリストを構築（手動固定 or スティッキー優先 + プリセット順）
-       */
       function buildCandidateModelList() {
         if (selectedModel && selectedModel !== 'auto') {
           return [selectedModel];
@@ -1282,9 +1279,6 @@
         return list;
       }
 
-      /**
-       * モード別の翻訳プロンプトを生成
-       */
       function buildTranslationPrompt(text, mode) {
         if (mode === 'tw-translate') {
           return '以下の台湾華語（繁体字）を自然な日本語に翻訳してください。翻訳結果の日本語のみを出力し、説明や補足は一切書かないでください。\n\n' + text;
@@ -1298,9 +1292,6 @@
         return text;
       }
 
-      /**
-       * 単一モデルに対して Gemini generateContent を実行する
-       */
       async function requestGeminiSingleModel(modelName, prompt, key) {
         const url = 'https://generativelanguage.googleapis.com/v1beta/models/' +
           encodeURIComponent(modelName) + ':generateContent?key=' + encodeURIComponent(key);
@@ -1326,15 +1317,12 @@
         return out;
       }
 
-      /**
-       * スティッキー優先・即時フォールバック・全失敗時 ListModels 自動探索付き翻訳実行
-       */
       async function callGeminiTranslate(prompt, key, onProgress) {
         const candidates = buildCandidateModelList();
         const tried = [];
         let lastError = null;
 
-        // 第1段階：優先リストを待機なしで順次フォールバック
+        // 第1段階：優先モデルリストを待機なし即時フォールバック
         for (let i = 0; i < candidates.length; i++) {
           const modelName = candidates[i];
           tried.push(modelName);
@@ -1355,7 +1343,7 @@
           }
         }
 
-        // 第2段階：自動モードで全候補失敗時のみ ListModels で未試行モデルを自動探索して試行
+        // 第2段階：自動モードで全候補失敗時のみ ListModels で代替モデルを取得して再試行
         if (selectedModel === 'auto') {
           try {
             if (typeof onProgress === 'function') {
@@ -1391,7 +1379,7 @@
       }
 
       // =========================================================
-      // 7. モード別エンプティステート・高密度レイアウト・スマートスクロール
+      // 7. モード別初期画面・高密度レイアウト・確実な自動スクロール
       // =========================================================
 
       function isNearBottom() {
@@ -1411,7 +1399,7 @@
       }
 
       /**
-       * DOM再計算後に確実にコンテナ最下部まで自動スクロールする（2重 rAF によるモバイル安定化）
+       * 2重の requestAnimationFrame を使って確実に最新の発話（一番下）まで自動スクロールする
        */
       function scrollToBottomForce() {
         if (!dom.transcriptScroll) return;
@@ -1429,9 +1417,6 @@
         }
       }
 
-      /**
-       * 選択中のモードに合わせて初期画面（エンプティステート）のアイコン・タイトル・説明文を更新
-       */
       function updateEmptyStateContent() {
         const modeKey = dom.modeSelect ? dom.modeSelect.value : 'tw-practice';
         const meta = MODES[modeKey] || MODES['tw-practice'];
@@ -1440,9 +1425,6 @@
         if (dom.emptyStateDesc) dom.emptyStateDesc.textContent = meta.desc;
       }
 
-      /**
-       * 高密度字幕モード用ツールバー（原文ON/OFF・文字 小/中/大）の表示とクラスを同期
-       */
       function updateCompactToolbarUI() {
         if (dom.transcriptScroll) {
           dom.transcriptScroll.classList.toggle('hide-original', !showOriginal);
@@ -1476,9 +1458,6 @@
         });
       }
 
-      /**
-       * 現在のモードに応じて高密度レイアウト・専用バー・エンプティステートを適用
-       */
       function applyModeLayout() {
         const modeKey = dom.modeSelect ? dom.modeSelect.value : 'tw-practice';
         const isCompact = modeKey === 'tw-translate';
@@ -1495,9 +1474,6 @@
         syncScrollBottomBtn();
       }
 
-      /**
-       * 聞き取り中の仮テキストプレビューを更新
-       */
       function setInterimPreview(text) {
         if (!dom.interimPreview || !dom.interimPreviewText) return;
         const trimmed = String(text || '').trim();
@@ -1576,7 +1552,7 @@
           outputArea.appendChild(createTtsControlsRow(translatedText));
         }
 
-        // 通常モードのカード右下に小さく使用モデル名を表示（高密度モードではCSSで自動非表示）
+        // 通常モードのカード右下に小さく使用モデル名を表示（高密度モードではCSSで非表示）
         if (modelName) {
           const badgeRow = document.createElement('div');
           badgeRow.className = 'model-badge-row flex justify-end mt-1.5';
@@ -1621,13 +1597,11 @@
         }
       }
 
-      /**
-       * 確定テキスト（または救済テキスト）をタイムラインへ追加する（1.5秒以内の同一文二重確定を防止）
-       */
       function commitUtterance(text, mode) {
         const cleanText = String(text || '').trim();
         if (!cleanText || !dom.transcriptList) return false;
 
+        // 1.5秒以内の同一文二重確定を防止
         const now = Date.now();
         if (cleanText === lastCommittedText && (now - lastCommittedAt) < DEDUP_WINDOW_MS) {
           return false;
@@ -1645,7 +1619,6 @@
         card.dataset.mode = mode;
         card.dataset.time = timeStr;
 
-        // カードヘッダー（モードバッジ・時刻）
         const header = document.createElement('div');
         header.className = 'card-header flex items-center justify-between gap-2 mb-1.5';
 
@@ -1661,14 +1634,12 @@
         header.appendChild(timeEl);
         card.appendChild(header);
 
-        // 原文テキスト
         const origEl = document.createElement('div');
         origEl.className = 'orig-text text-lg sm:text-xl font-bold text-slate-900 leading-snug break-words select-text';
         origEl.textContent = cleanText;
         card.appendChild(origEl);
 
         if (mode === 'tw-practice') {
-          // 発音練習モード：声調記号付きピンイン + 発音ボタン（API不要）
           const py = toPinyin(cleanText);
           if (py) {
             const pyEl = document.createElement('div');
@@ -1678,14 +1649,12 @@
           }
           card.appendChild(createTtsControlsRow(cleanText));
         } else {
-          // 翻訳モード：出力領域を作成して非同期翻訳を開始
           const outputArea = document.createElement('div');
           outputArea.className = 'output-area mt-2 pt-2 border-t border-slate-100';
           card.appendChild(outputArea);
           runCardTranslation(cleanText, mode, outputArea);
         }
 
-        // 仮テキストプレビューの直前に挿入
         if (dom.interimPreview && dom.interimPreview.parentNode === dom.transcriptList) {
           dom.transcriptList.insertBefore(card, dom.interimPreview);
         } else {
@@ -1720,7 +1689,7 @@
       }
 
       /**
-       * 録音ボタンおよびライブステータスバーの表示更新
+       * 録音ボタンおよびライブステータスバーの表示を更新
        * state: 'idle' | 'connecting' | 'active' | 'speaking' | 'reconnecting' | 'tts'
        */
       function updateMicButtonUI(state) {
@@ -1784,9 +1753,6 @@
         }
       }
 
-      /**
-       * 未確定のまま残っている仮テキストを救済して確定する
-       */
       function rescuePendingInterim() {
         if (utteranceCommitted) return false;
         const rescue = (bestInterimText || lastInterimText).trim();
@@ -1800,9 +1766,6 @@
         return commitUtterance(rescue, activeUtteranceMode);
       }
 
-      /**
-       * 仮テキスト更新が3.5秒停止したら自動確定するウォッチドッグ（Android/PC向け）
-       */
       function resetWatchdog() {
         if (watchdogTimer) {
           clearTimeout(watchdogTimer);
@@ -1831,9 +1794,6 @@
         }, WATCHDOG_MS);
       }
 
-      /**
-       * SpeechRecognition インスタンスを安全に生成する
-       */
       function createRecognitionInstance() {
         try {
           const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -1944,7 +1904,6 @@
             if (!wantRecording || pausedForTTS) return;
 
             if (isIOS) {
-              // iOSではゾンビ状態防止のため確実に停止表示へ戻す
               if (code === 'no-speech' || code === 'aborted' || code === 'audio-capture' || code === 'network') {
                 rescuePendingInterim();
                 wantRecording = false;
@@ -1957,7 +1916,7 @@
               return;
             }
 
-            // Android/PC：マイク拒否以外のエラーは500ms〜2000msバックオフで自動復帰
+            // Android/PC：一時エラー時は500ms〜2000msで自動復帰
             errorRetryCount = Math.min(errorRetryCount + 1, 4);
             pendingBackoffMs = Math.min(ERROR_BACKOFF_MAX_MS, ERROR_BACKOFF_STEP_MS * errorRetryCount);
             updateMicButtonUI('reconnecting');
@@ -2014,7 +1973,7 @@
 
             if (wantRecording) {
               if (isIOS) {
-                // iOSではonend時に自動再開せず確実に停止状態へ戻す
+                // iOSではゾンビ状態を防ぐため即座に停止状態へ戻す
                 wantRecording = false;
                 pendingBackoffMs = 0;
                 updateMicButtonUI('idle');
@@ -2078,7 +2037,7 @@
         isStarting = true;
         updateMicButtonUI('connecting');
 
-        // 3秒以内にonstartが返らない場合は起動詰まりとして安全に停止状態へリセット
+        // 3秒以内にonstartが返らない場合は強制リセットして停止状態へ戻す
         startTimeoutTimer = setTimeout(() => {
           startTimeoutTimer = null;
           if (!isStarting || isRecognizing) return;
@@ -2117,7 +2076,7 @@
       }
 
       function startRecording() {
-        // 録音開始前に入力欄のAPIキーを4重ストレージへ自動保存（権限許可後の消失対策）
+        // 録音開始前に入力欄のAPIキーを4重ストレージへ自動保存
         if (dom.apiKeyInput) {
           const typed = normalizeKey(dom.apiKeyInput.value);
           if (typed) saveApiKey(typed);
@@ -2222,7 +2181,7 @@
       }
 
       // =========================================================
-      // 11. イベントリスナー登録（最優先で確実に実行）
+      // 11. イベントリスナー登録（DOM初期化の先頭で確実に実行）
       // =========================================================
 
       function bindEvents() {
@@ -2243,12 +2202,12 @@
           });
         }
 
-        // モデル手動選択ドロップダウン変更
+        // モデル手動選択ドロップダウン
         if (dom.modelSelect) {
           dom.modelSelect.addEventListener('change', () => {
             saveSelectedModel(dom.modelSelect.value);
             if (selectedModel === 'auto') {
-              showToast('翻訳モデル: 自動（高速・最優先）');
+              showToast('翻訳モデル: 自動（最速優先）');
             } else {
               showToast('翻訳モデル固定: ' + selectedModel);
             }
@@ -2330,7 +2289,7 @@
           });
         }
 
-        // モード選択変更（エンプティステート説明文・レイアウトを即座に切り替え）
+        // モード選択変更
         if (dom.modeSelect) {
           dom.modeSelect.addEventListener('change', () => {
             applyModeLayout();
@@ -2370,10 +2329,17 @@
           });
         }
 
-        // 高密度モード：原文表示 ON/OFF
+        // 高密度モード：原文表示 ON/OFF トグル
         if (dom.toggleOriginalBtn) {
           dom.toggleOriginalBtn.addEventListener('click', () => {
             showOriginal = !showOriginal;
+            storageSet(KEY_SHOW_ORIGINAL, showOriginal ? 'on' : 'off');
+            updateCompactToolbarUI();
+            syncScrollBottomBtn();
+            showToast(showOriginal ? '中国語原文を表示します' : '日本語訳のみ表示します');
+          });
+        }
+
         // 高密度モード：文字サイズ 小/中/大 セグメントボタン
         const sizeToastLabels = {
           sm: '文字サイズ: 小（一覧性重視）',
@@ -2392,7 +2358,7 @@
           });
         });
 
-        // スマート自動スクロール監視 & 「↓ 最新へ」ボタン
+        // スクロール位置監視 & 「↓ 最新へ」ボタン
         if (dom.transcriptScroll) {
           dom.transcriptScroll.addEventListener('scroll', syncScrollBottomBtn, { passive: true });
         }
@@ -2449,7 +2415,7 @@
           });
         }
 
-        // クリアボタン（履歴消去＋選択中モードの初期画面ガイドを再表示）
+        // クリアボタン
         if (dom.clearBtn && dom.transcriptList) {
           dom.clearBtn.addEventListener('click', () => {
             if (activeTtsBtn) {
