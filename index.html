@@ -74,7 +74,7 @@
       border-bottom: 1px solid #e5e7eb;
       border-radius: 0;
       box-shadow: none;
-      padding: 5px 10px;
+      padding: 6px 10px;
       margin: 0;
     }
     #transcript-scroll.compact-mode .utterance-card::after {
@@ -89,19 +89,19 @@
       float: right;
       margin: 0 0 0 8px;
       padding: 0;
-      line-height: 1.32;
+      line-height: 1.35;
     }
     #transcript-scroll.compact-mode .card-time {
-      font-size: 10px;
+      font-size: 10.5px;
       color: #9ca3af;
       font-weight: 400;
     }
     #transcript-scroll.compact-mode .orig-text {
-      font-size: 11px;
-      line-height: 1.28;
+      font-size: 12px;
+      line-height: 1.32;
       font-weight: 400;
       color: #6b7280;
-      margin-bottom: 1px;
+      margin-bottom: 2px;
     }
     #transcript-scroll.compact-mode.hide-original .orig-text {
       display: none !important;
@@ -111,9 +111,10 @@
       padding-top: 0;
       border-top: none;
     }
+    /* 高密度モード：文字サイズ「中」（デフォルト） */
     #transcript-scroll.compact-mode .trans-text {
-      font-size: 14px;
-      line-height: 1.32;
+      font-size: 17px;
+      line-height: 1.35;
       font-weight: 600;
       color: #0f172a;
     }
@@ -121,22 +122,22 @@
       display: none !important;
     }
     #transcript-scroll.compact-mode .translating-row {
-      font-size: 12px;
-      line-height: 1.32;
+      font-size: 13px;
+      line-height: 1.35;
       color: #6b7280;
       font-style: italic;
       gap: 5px;
     }
     #transcript-scroll.compact-mode .spinner {
-      width: 11px;
-      height: 11px;
+      width: 12px;
+      height: 12px;
       border-width: 1.5px;
     }
     #transcript-scroll.compact-mode .error-box {
       background-color: #fff1f2;
       border: 1px solid #fecdd3;
       border-radius: 6px;
-      padding: 3px 7px;
+      padding: 4px 8px;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -144,22 +145,71 @@
       flex-wrap: wrap;
     }
     #transcript-scroll.compact-mode .error-msg {
-      font-size: 11.5px;
-      line-height: 1.3;
+      font-size: 12px;
+      line-height: 1.32;
     }
     #transcript-scroll.compact-mode .card-retry-btn {
       padding: 2px 8px;
       font-size: 11px;
       border-radius: 5px;
     }
-    /* 高密度モード：文字サイズ「小」 */
-    #transcript-scroll.compact-mode.compact-size-sm .orig-text {
+    /* 高密度モード：文字サイズ「小」（一覧性最大） */
+    #transcript-scroll.compact-mode.compact-size-sm .utterance-card {
+      padding: 5px 10px;
+    }
+    #transcript-scroll.compact-mode.compact-size-sm .card-time {
       font-size: 10px;
+    }
+    #transcript-scroll.compact-mode.compact-size-sm .orig-text {
+      font-size: 11px;
       line-height: 1.24;
+      margin-bottom: 1px;
     }
     #transcript-scroll.compact-mode.compact-size-sm .trans-text {
-      font-size: 12.5px;
-      line-height: 1.32;
+      font-size: 14px;
+      line-height: 1.28;
+    }
+    #transcript-scroll.compact-mode.compact-size-sm #interim-preview-text {
+      font-size: 13px;
+      line-height: 1.28;
+    }
+    /* 高密度モード：文字サイズ「大」（老眼対応・高コントラスト） */
+    #transcript-scroll.compact-mode.compact-size-lg .utterance-card {
+      padding: 10px 12px;
+    }
+    #transcript-scroll.compact-mode.compact-size-lg .card-header {
+      line-height: 1.42;
+    }
+    #transcript-scroll.compact-mode.compact-size-lg .card-time {
+      font-size: 12px;
+      color: #6b7280;
+    }
+    #transcript-scroll.compact-mode.compact-size-lg .orig-text {
+      font-size: 15px;
+      line-height: 1.38;
+      color: #4b5563;
+      margin-bottom: 3px;
+    }
+    #transcript-scroll.compact-mode.compact-size-lg .trans-text {
+      font-size: 23px;
+      line-height: 1.42;
+      font-weight: 700;
+      color: #111111;
+    }
+    #transcript-scroll.compact-mode.compact-size-lg .translating-row {
+      font-size: 16px;
+      line-height: 1.4;
+    }
+    #transcript-scroll.compact-mode.compact-size-lg .error-msg {
+      font-size: 14px;
+      line-height: 1.4;
+    }
+    #transcript-scroll.compact-mode.compact-size-lg #interim-preview {
+      padding: 8px 12px;
+    }
+    #transcript-scroll.compact-mode.compact-size-lg #interim-preview-text {
+      font-size: 18px;
+      line-height: 1.4;
     }
     /* 高密度モード：仮テキストプレビュー */
     #transcript-scroll.compact-mode #interim-preview {
@@ -169,13 +219,13 @@
       border-top: none;
       border-bottom: 1px dashed #cbd5e1;
       box-shadow: none;
-      padding: 5px 10px;
+      padding: 6px 10px;
       margin: 0;
       background-color: #f8fafc;
     }
     #transcript-scroll.compact-mode #interim-preview-text {
-      font-size: 12.5px;
-      line-height: 1.32;
+      font-size: 14px;
+      line-height: 1.35;
     }
   </style>
 </head>
@@ -191,9 +241,9 @@
         <!-- タイトル & 設定ボタン行 -->
         <div class="flex items-center justify-between gap-2">
           <div class="flex items-center gap-1.5 min-w-0">
-            <span class="text-lg shrink-0" aria-hidden="true">🇹🇼</span>
-            <h1 class="text-sm sm:text-base font-bold text-slate-900 truncate">
-              台湾華語トランスクライバー Pro
+            <span class="text-base sm:text-lg shrink-0" aria-hidden="true">🇹🇼</span>
+            <h1 class="text-[13px] sm:text-base font-bold text-slate-900 truncate leading-tight">
+              台湾華語　練習アプリby川本
             </h1>
           </div>
 
@@ -333,24 +383,43 @@
         <!-- 高密度モード専用ツールバー (tw-translate 選択時のみ表示) -->
         <div
           id="compact-options-bar"
-          class="hidden flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl bg-slate-100 border border-slate-200/80 text-xs"
+          class="hidden flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-xl bg-slate-100 border border-slate-200/80 text-xs flex-wrap"
         >
-          <span class="font-bold text-slate-600 truncate">📺 字幕モード表示</span>
-          <div class="flex items-center gap-1.5 shrink-0">
-            <button
-              type="button"
-              id="toggle-original-btn"
-              class="px-2.5 py-1 rounded-lg font-bold border transition cursor-pointer bg-blue-600 text-white border-blue-600"
-            >
-              原文表示: ON
-            </button>
-            <button
-              type="button"
-              id="toggle-fontsize-btn"
-              class="px-2.5 py-1 rounded-lg font-bold border transition cursor-pointer bg-white text-slate-700 border-slate-300 hover:bg-slate-50"
-            >
-              文字: 中
-            </button>
+          <button
+            type="button"
+            id="toggle-original-btn"
+            class="px-2.5 py-1 rounded-lg font-bold border transition cursor-pointer bg-blue-600 text-white border-blue-600 shrink-0"
+          >
+            原文表示: ON
+          </button>
+          <div class="flex items-center gap-1 shrink-0" role="group" aria-label="文字サイズ切替">
+            <span class="text-[11px] font-bold text-slate-500 mr-0.5">文字:</span>
+            <div class="inline-flex rounded-lg border border-slate-300 bg-white overflow-hidden">
+              <button
+                type="button"
+                id="size-btn-sm"
+                data-size="sm"
+                class="px-2.5 py-1 text-xs font-bold transition cursor-pointer text-slate-700 hover:bg-slate-50"
+              >
+                小
+              </button>
+              <button
+                type="button"
+                id="size-btn-md"
+                data-size="md"
+                class="px-2.5 py-1 text-xs font-bold border-x border-slate-300 transition cursor-pointer bg-blue-600 text-white"
+              >
+                中
+              </button>
+              <button
+                type="button"
+                id="size-btn-lg"
+                data-size="lg"
+                class="px-2.5 py-1 text-xs font-bold transition cursor-pointer text-slate-700 hover:bg-slate-50"
+              >
+                大
+              </button>
+            </div>
           </div>
         </div>
 
@@ -555,7 +624,7 @@
       let selectedModel = 'auto';
       let discoveredModels = [];
       let showOriginal = true;
-      let compactSize = 'md'; // 'md' | 'sm'
+      let compactSize = 'md'; // 'sm' | 'md' | 'lg'
 
       // 音声認識の内部状態（ユーザー意図と実稼働状態を分離）
       let recognition = null;
@@ -771,7 +840,7 @@
         showOriginal = savedOrig !== 'off';
 
         const savedSize = storageGet(KEY_COMPACT_SIZE) || storageGet('tw_transcriber_pro_v6_compact_size');
-        compactSize = savedSize === 'sm' ? 'sm' : 'md';
+        compactSize = (savedSize === 'sm' || savedSize === 'lg') ? savedSize : 'md';
 
         if (dom.apiKeyInput && apiKey) {
           dom.apiKeyInput.value = apiKey;
@@ -1341,12 +1410,23 @@
         }
       }
 
-      function scrollToBottomIfAuto(wasNearBottom) {
+      /**
+       * DOM再計算後に確実にコンテナ最下部まで自動スクロールする（2重 rAF によるモバイル安定化）
+       */
+      function scrollToBottomForce() {
         if (!dom.transcriptScroll) return;
-        if (wasNearBottom) {
+        const doScroll = () => {
+          if (!dom.transcriptScroll) return;
           dom.transcriptScroll.scrollTop = dom.transcriptScroll.scrollHeight;
+          syncScrollBottomBtn();
+        };
+        doScroll();
+        if (typeof window.requestAnimationFrame === 'function') {
+          window.requestAnimationFrame(() => {
+            doScroll();
+            window.requestAnimationFrame(doScroll);
+          });
         }
-        syncScrollBottomBtn();
       }
 
       /**
@@ -1361,31 +1441,39 @@
       }
 
       /**
-       * 高密度字幕モード用ツールバー（原文ON/OFF・文字 中/小）の表示とクラスを同期
+       * 高密度字幕モード用ツールバー（原文ON/OFF・文字 小/中/大）の表示とクラスを同期
        */
       function updateCompactToolbarUI() {
         if (dom.transcriptScroll) {
           dom.transcriptScroll.classList.toggle('hide-original', !showOriginal);
           dom.transcriptScroll.classList.toggle('compact-size-sm', compactSize === 'sm');
+          dom.transcriptScroll.classList.toggle('compact-size-lg', compactSize === 'lg');
         }
 
         if (dom.toggleOriginalBtn) {
           dom.toggleOriginalBtn.textContent = showOriginal ? '原文表示: ON' : '原文表示: OFF';
           if (showOriginal) {
-            dom.toggleOriginalBtn.className = 'px-2.5 py-1 rounded-lg font-bold border transition cursor-pointer bg-blue-600 text-white border-blue-600';
+            dom.toggleOriginalBtn.className = 'px-2.5 py-1 rounded-lg font-bold border transition cursor-pointer bg-blue-600 text-white border-blue-600 shrink-0';
           } else {
-            dom.toggleOriginalBtn.className = 'px-2.5 py-1 rounded-lg font-bold border transition cursor-pointer bg-white text-slate-700 border-slate-300 hover:bg-slate-50';
+            dom.toggleOriginalBtn.className = 'px-2.5 py-1 rounded-lg font-bold border transition cursor-pointer bg-white text-slate-700 border-slate-300 hover:bg-slate-50 shrink-0';
           }
         }
 
-        if (dom.toggleFontSizeBtn) {
-          dom.toggleFontSizeBtn.textContent = compactSize === 'sm' ? '文字: 小' : '文字: 中';
-          if (compactSize === 'sm') {
-            dom.toggleFontSizeBtn.className = 'px-2.5 py-1 rounded-lg font-bold border transition cursor-pointer bg-blue-600 text-white border-blue-600';
+        const sizeButtons = [
+          { el: dom.sizeBtnSm, key: 'sm', extra: '' },
+          { el: dom.sizeBtnMd, key: 'md', extra: 'border-x border-slate-300 ' },
+          { el: dom.sizeBtnLg, key: 'lg', extra: '' }
+        ];
+        sizeButtons.forEach((item) => {
+          if (!item.el) return;
+          const isActive = compactSize === item.key;
+          item.el.setAttribute('aria-pressed', String(isActive));
+          if (isActive) {
+            item.el.className = 'px-2.5 py-1 text-xs font-bold transition cursor-pointer ' + item.extra + 'bg-blue-600 text-white';
           } else {
-            dom.toggleFontSizeBtn.className = 'px-2.5 py-1 rounded-lg font-bold border transition cursor-pointer bg-white text-slate-700 border-slate-300 hover:bg-slate-50';
+            item.el.className = 'px-2.5 py-1 text-xs font-bold transition cursor-pointer ' + item.extra + 'bg-white text-slate-700 hover:bg-slate-50';
           }
-        }
+        });
       }
 
       /**
@@ -1413,7 +1501,6 @@
       function setInterimPreview(text) {
         if (!dom.interimPreview || !dom.interimPreviewText) return;
         const trimmed = String(text || '').trim();
-        const wasNear = isNearBottom();
 
         if (!trimmed) {
           dom.interimPreview.classList.add('hidden');
@@ -1424,7 +1511,7 @@
         if (dom.emptyStateCard) dom.emptyStateCard.classList.add('hidden');
         dom.interimPreviewText.textContent = trimmed;
         dom.interimPreview.classList.remove('hidden');
-        scrollToBottomIfAuto(wasNear);
+        scrollToBottomForce();
       }
 
       // =========================================================
@@ -1511,13 +1598,13 @@
             'APIキーが未設定です。右上の「⚙️ 設定」からGemini APIキーを保存してください。',
             () => runCardTranslation(text, mode, outputArea)
           );
+          scrollToBottomForce();
           return;
         }
         if (keyNow !== apiKey) saveApiKey(keyNow);
 
-        const wasNear = isNearBottom();
         renderTranslationLoading(outputArea, '翻訳中...');
-        scrollToBottomIfAuto(wasNear);
+        scrollToBottomForce();
 
         try {
           const prompt = buildTranslationPrompt(text, mode);
@@ -1525,14 +1612,12 @@
             const lbl = outputArea.querySelector('.translating-label');
             if (lbl) lbl.textContent = progressText;
           });
-          const nearAfter = isNearBottom();
           renderTranslationSuccess(outputArea, result.text, result.model, mode);
-          scrollToBottomIfAuto(nearAfter);
+          scrollToBottomForce();
         } catch (err) {
-          const nearAfter = isNearBottom();
           const msg = err && err.message ? err.message : '翻訳リクエストに失敗しました';
           renderTranslationError(outputArea, msg, () => runCardTranslation(text, mode, outputArea));
-          scrollToBottomIfAuto(nearAfter);
+          scrollToBottomForce();
         }
       }
 
@@ -1550,7 +1635,6 @@
         lastCommittedText = cleanText;
         lastCommittedAt = now;
 
-        const wasNear = isNearBottom();
         if (dom.emptyStateCard) dom.emptyStateCard.classList.add('hidden');
 
         const meta = MODES[mode] || MODES['tw-practice'];
@@ -1608,7 +1692,7 @@
           dom.transcriptList.appendChild(card);
         }
 
-        scrollToBottomIfAuto(wasNear);
+        scrollToBottomForce();
         return true;
       }
 
@@ -2290,23 +2374,23 @@
         if (dom.toggleOriginalBtn) {
           dom.toggleOriginalBtn.addEventListener('click', () => {
             showOriginal = !showOriginal;
-            storageSet(KEY_SHOW_ORIGINAL, showOriginal ? 'on' : 'off');
-            updateCompactToolbarUI();
-            syncScrollBottomBtn();
-            showToast(showOriginal ? '原文表示: ON' : '原文表示: OFF（日本語訳のみ）');
-          });
-        }
-
-        // 高密度モード：文字サイズ 中/小
-        if (dom.toggleFontSizeBtn) {
-          dom.toggleFontSizeBtn.addEventListener('click', () => {
-            compactSize = compactSize === 'sm' ? 'md' : 'sm';
+        // 高密度モード：文字サイズ 小/中/大 セグメントボタン
+        const sizeToastLabels = {
+          sm: '文字サイズ: 小（一覧性重視）',
+          md: '文字サイズ: 中（標準）',
+          lg: '文字サイズ: 大（大きめ・見やすい）'
+        };
+        [dom.sizeBtnSm, dom.sizeBtnMd, dom.sizeBtnLg].forEach((btn) => {
+          if (!btn) return;
+          btn.addEventListener('click', () => {
+            const nextSize = btn.dataset.size || 'md';
+            compactSize = (nextSize === 'sm' || nextSize === 'lg') ? nextSize : 'md';
             storageSet(KEY_COMPACT_SIZE, compactSize);
             updateCompactToolbarUI();
             syncScrollBottomBtn();
-            showToast(compactSize === 'sm' ? '文字サイズ: 小（高密度）' : '文字サイズ: 中（標準）');
+            showToast(sizeToastLabels[compactSize]);
           });
-        }
+        });
 
         // スマート自動スクロール監視 & 「↓ 最新へ」ボタン
         if (dom.transcriptScroll) {
@@ -2411,7 +2495,9 @@
         dom.modeSelect = document.getElementById('mode-select');
         dom.compactOptionsBar = document.getElementById('compact-options-bar');
         dom.toggleOriginalBtn = document.getElementById('toggle-original-btn');
-        dom.toggleFontSizeBtn = document.getElementById('toggle-fontsize-btn');
+        dom.sizeBtnSm = document.getElementById('size-btn-sm');
+        dom.sizeBtnMd = document.getElementById('size-btn-md');
+        dom.sizeBtnLg = document.getElementById('size-btn-lg');
         dom.transcriptScroll = document.getElementById('transcript-scroll');
         dom.transcriptList = document.getElementById('transcript-list');
         dom.emptyStateCard = document.getElementById('empty-state-card');
