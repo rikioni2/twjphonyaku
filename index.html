@@ -392,6 +392,20 @@
     <!-- 下部固定コントロールバー -->
     <footer class="bg-white border-t border-slate-200/90 px-3 pt-2 safe-bottom shrink-0 z-20 shadow-[0_-3px_10px_rgba(15,23,42,0.05)]">
       <div class="max-w-2xl mx-auto space-y-2">
+        <!-- ライブマイク稼働ステータス & 動作環境バッジ -->
+        <div class="flex items-center justify-between gap-2 px-1 text-[11px] font-semibold">
+          <div id="mic-live-status" class="flex items-center gap-1.5 text-slate-500 truncate">
+            <span id="mic-live-dot" class="inline-block w-2 h-2 rounded-full bg-slate-300 shrink-0"></span>
+            <span id="mic-live-text" class="truncate">待機中（タップして録音開始）</span>
+          </div>
+          <span
+            id="env-mode-badge"
+            class="px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 text-[10px] font-bold shrink-0"
+          >
+            標準モード
+          </span>
+        </div>
+
         <!-- プライマリ録音開始/停止ボタン -->
         <button
           type="button"
@@ -437,7 +451,8 @@
   <script>
     /**
      * 台湾華語トランスクライバー Pro
-     * - 台湾華語（zh-TW）音声合成（TTS）機能（通常 0.95x / ゆっくり 0.65x・録音中フィードバック防止）
+     * - iOS(iPhone/iPad) 自動判定・ゾンビ状態防止（起動3秒タイムアウト・実稼働可視化・iOS連続認識/安全停止）
+     * - 台湾華語（zh-TW）音声合成（TTS）iOS完全対応（クリック同期再生・cancel条件分岐・オーディオ競合防止）
      * - Android Chrome 音声認識安定化（仮テキスト救済・3.5秒ウォッチドッグ・280msクールタイム・エラー自動復帰）
      * - Gemini API 高速翻訳エンジン（最速モデル優先・スティッキー記憶・6秒タイムアウト・即時フォールバック）
      * - 4層ストレージ保存＆全外部APIの個別try/catchガード
@@ -446,8 +461,19 @@
       'use strict';
 
       // =========================================================
-      // 1. 定数・モード定義
+      // 1. 定数・環境判定・モード定義
       // =========================================================
+      const isIOS = (function () {
+        try {
+          const ua = navigator.userAgent || '';
+          const platform = navigator.platform || '';
+          const touchPoints = Number(navigator.maxTouchPoints || 0);
+          return /iP(hone|ad|od)/i.test(ua) || (platform === 'MacIntel' && touchPoints > 1);
+        } catch (e) {
+          return false;
+        }
+      })();
+
       const WINDOW_NAME_PREFIX = 'TW_TRANSCRIBER_PRO::';
       const STORAGE_PREFIX = 'tw_transcriber_pro_v6_';
       const KEY_API = STORAGE_PREFIX + 'api_key';
@@ -458,6 +484,7 @@
 
       const FETCH_TIMEOUT_MS = 6000;
       const AUTO_SCROLL_THRESHOLD_PX = 80;
+      const START_TIMEOUT_MS = 3000;
       const WATCHDOG_MS = 3500;
       const RESTART_COOLDOWN_MS = 280;
       const DEDUP_WINDOW_MS = 1500;
@@ -518,11 +545,15 @@
       let showOriginal = true;
       let compactSize = 'md'; // 'md' | 'sm'
 
-      // 音声認識状態フラグ
+      // 音声認識状態フラグ（ユーザー意図と実稼働状態を厳密に分離）
       let recognition = null;
-      let shouldBeRecording = false;
+      let wantRecording = false;
+      let isStarting = false;
       let isRecognizing = false;
       let pausedForTTS = false;
+      let manualStopInProgress = false;
+      let modeSwitchInProgress = false;
+      let startTimeoutTimer = null;
       let restartTimer = null;
       let watchdogTimer = null;
       let errorRetryCount = 0;
@@ -533,6 +564,7 @@
       let activeUtteranceMode = 'tw-practice';
       let lastInterimText = '';
       let bestInterimText = '';
+      let lastRescuedSnapshot = '';
       let lastCommittedText = '';
       let lastCommittedAt = 0;
 
@@ -750,7 +782,7 @@
       function updateApiStatusBadge() {
         if (!dom.apiStatusPill) return;
         if (apiKey) {
-          dom.apiStatusPill.textContent = '設定済';
+          dom.apiStatusPill.textContent = '設定済み';
           dom.apiStatusPill.className = 'px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800';
         } else {
           dom.apiStatusPill.textContent = '未設定';
@@ -814,72 +846,7 @@
       // =========================================================
 
       /**
-       * 利用可能な音声リストを安全に更新
-       */
-      function refreshTtsVoices() {
-        try {
-          if ('speechSynthesis' in window && typeof window.speechSynthesis.getVoices === 'function') {
-            const list = window.speechSynthesis.getVoices();
-            if (Array.isArray(list) && list.length > 0) {
-              availableVoices = list;
-            }
-          }
-        } catch (e) {}
-      }
-
-      /**
-       * 台湾華語に最適な音声を選択（優先順: zh-TW / zh_TW -> zh-HK -> その他 zh 系）
-       */
-      function getPreferredTwVoice() {
-        if (availableVoices.length === 0) refreshTtsVoices();
-        if (availableVoices.length === 0) return null;
-
-        const norm = (lang) => String(lang || '').toLowerCase().replace(/_/g, '-');
-
-        // 1) 完全一致 zh-tw
-        let match = availableVoices.find((v) => norm(v.lang) === 'zh-tw');
-        if (match) return match;
-
-        // 2) zh-tw で始まる、または台湾表記を含む
-        match = availableVoices.find((v) => norm(v.lang).startsWith('zh-tw') || /taiwan|台灣|臺灣/i.test(v.name || ''));
-        if (match) return match;
-
-        // 3) zh-hk（広東語/香港繁体字フォールバック）
-        match = availableVoices.find((v) => norm(v.lang) === 'zh-hk' || norm(v.lang).startsWith('zh-hk'));
-        if (match) return match;
-
-        // 4) その他の中国語（zh 系）
-        match = availableVoices.find((v) => norm(v.lang).startsWith('zh'));
-        return match || null;
-      }
-
-      function clearTtsTimers() {
-        if (ttsSafetyTimer) {
-          clearTimeout(ttsSafetyTimer);
-          ttsSafetyTimer = null;
-        }
-        if (ttsPollTimer) {
-          clearInterval(ttsPollTimer);
-          ttsPollTimer = null;
-        }
-      }
-
-      function setTtsButtonVisual(btn, playing) {
-        if (!btn) return;
-        const idleLabel = btn.dataset.idleLabel || '🔊 発音';
-        if (playing) {
-          btn.textContent = '⏹ 停止';
-          btn.setAttribute('aria-pressed', 'true');
-          btn.className = 'tts-btn inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-teal-600 text-white border border-teal-600 shadow-sm text-xs font-bold transition active:scale-[0.97] cursor-pointer';
-        } else {
-          btn.textContent = idleLabel;
-          btn.setAttribute('aria-pressed', 'false');
-          btn.className = 'tts-btn inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-50 hover:bg-blue-50 text-slate-700 hover:text-blue-700 border border-slate-200 hover:border-blue-300 text-xs font-semibold transition active:scale-[0.97] cursor-pointer';
-        }
-      }
-
-      /**
-       * 音声再生を終了し、録音中だった場合は安全に録音を再開する
+       * 音声再生を終了し、録音中だった場合は安全に録音を再開する（Androidのみ）
        */
       function finishTtsSession(resumeIfPaused) {
         clearTtsTimers();
@@ -890,10 +857,11 @@
 
         if (resumeIfPaused && pausedForTTS) {
           pausedForTTS = false;
-          if (shouldBeRecording) {
+          if (!isIOS && wantRecording) {
             updateMicButtonUI('reconnecting');
             scheduleRestart(RESTART_COOLDOWN_MS);
           } else {
+            wantRecording = false;
             updateMicButtonUI('idle');
           }
         }
@@ -905,7 +873,7 @@
       function stopTTS(resumeIfPaused) {
         ttsSessionId++;
         try {
-          if ('speechSynthesis' in window) {
+          if ('speechSynthesis' in window && (window.speechSynthesis.speaking || window.speechSynthesis.pending)) {
             window.speechSynthesis.cancel();
           }
         } catch (e) {}
@@ -913,7 +881,7 @@
       }
 
       /**
-       * 指定した台湾華語テキストを音声再生する
+       * 指定した台湾華語テキストを音声再生する（iOSの同期実行・cancel無音バグ・オーディオ競合対策済み）
        */
       function speakTaiwanese(text, rate, btn) {
         const cleanText = String(text || '').trim();
@@ -930,7 +898,7 @@
           return;
         }
 
-        // 別の再生中があればキャンセル（録音再開はまだ行わない）
+        // 別の再生中があればキャンセル（iOSのcancel直後無音バグ回避のため speaking/pending 時のみ実行）
         const wasPausedForTts = pausedForTTS;
         ttsSessionId++;
         clearTtsTimers();
@@ -939,25 +907,35 @@
           activeTtsBtn = null;
         }
         try {
-          window.speechSynthesis.cancel();
+          if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+            window.speechSynthesis.cancel();
+          }
         } catch (e) {}
 
-        // 録音中のフィードバック（スピーカー音の誤認識）防止：一時停止する
-        if (shouldBeRecording && !wasPausedForTts) {
-          pausedForTTS = true;
-          clearRecognitionTimers();
-          pendingBackoffMs = 0;
-          lastInterimText = '';
-          bestInterimText = '';
-          setInterimPreview('');
-          updateMicButtonUI('tts');
+        // 録音中のオーディオ競合・ハウリング防止
+        if (wantRecording || isRecognizing || isStarting) {
+          if (isIOS) {
+            // iOSでは確実に録音を停止状態へ戻し、再生後の自動再開は行わない（オーディオ競合・ゾンビ状態防止）
+            stopRecording(false);
+            showToast('発音再生のため録音を停止しました');
+          } else if (!wasPausedForTts) {
+            // Androidでは再生中だけ一時停止し、再生終了後に自動再開
+            pausedForTTS = true;
+            clearRecognitionTimers();
+            pendingBackoffMs = 0;
+            lastInterimText = '';
+            bestInterimText = '';
+            setInterimPreview('');
+            updateMicButtonUI('tts');
 
-          if (recognition && isRecognizing) {
-            try {
-              recognition.abort();
-            } catch (e) {
-              try { recognition.stop(); } catch (e2) {}
-              isRecognizing = false;
+            if (recognition && (isRecognizing || isStarting)) {
+              try {
+                recognition.abort();
+              } catch (e) {
+                try { recognition.stop(); } catch (e2) {}
+                isRecognizing = false;
+                isStarting = false;
+              }
             }
           }
         }
@@ -986,16 +964,20 @@
             if (currentSession !== ttsSessionId) return;
             const errType = ev && ev.error ? ev.error : '';
             if (errType && errType !== 'canceled' && errType !== 'interrupted') {
-              showToast('音声再生に失敗しました（端末の中国語音声データを確認してください）');
+              showToast('音声再生に失敗しました（消音設定や音声データを確認してください）');
             }
             finishTtsSession(true);
           };
 
-          // Android Chrome の onend 未発火対策：ポーリング＋最大安全タイマー
+          // iOS/Androidのonend未発火対策：文字数に応じた最大安全タイマー＋ポーリング
           const maxDurationMs = Math.max(4500, Math.min(35000, Math.ceil((cleanText.length * 480) / rate) + 3500));
           ttsSafetyTimer = setTimeout(() => {
             if (currentSession !== ttsSessionId) return;
-            try { window.speechSynthesis.cancel(); } catch (e) {}
+            try {
+              if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+                window.speechSynthesis.cancel();
+              }
+            } catch (e) {}
             finishTtsSession(true);
           }, maxDurationMs);
 
@@ -1013,6 +995,7 @@
             } catch (e) {}
           }, 450);
 
+          // クリックイベント内で同期的に再生を開始（iOS自動再生ブロック回避）
           window.speechSynthesis.speak(utterance);
         } catch (err) {
           showToast('音声再生を開始できませんでした');
@@ -1049,465 +1032,18 @@
       }
 
       // =========================================================
-      // 6. スマート自動スクロール制御
+      // 10. iOS / Android Chrome 両対応・安定化音声認識エンジン
       // =========================================================
 
-      function isNearBottom() {
-        if (!dom.transcriptScroll) return true;
-        const { scrollHeight, scrollTop, clientHeight } = dom.transcriptScroll;
-        return (scrollHeight - scrollTop - clientHeight) <= AUTO_SCROLL_THRESHOLD_PX;
-      }
-
-      function syncScrollBottomBtn() {
-        if (!dom.scrollBottomBtn || !dom.transcriptScroll) return;
-        const canScroll = dom.transcriptScroll.scrollHeight > dom.transcriptScroll.clientHeight + 40;
-        if (canScroll && !isNearBottom()) {
-          dom.scrollBottomBtn.classList.remove('hidden');
-        } else {
-          dom.scrollBottomBtn.classList.add('hidden');
+      function clearStartTimeout() {
+        if (startTimeoutTimer) {
+          clearTimeout(startTimeoutTimer);
+          startTimeoutTimer = null;
         }
       }
-
-      function autoScrollIfPinned(wasNearBottom) {
-        if (!wasNearBottom || !dom.transcriptScroll) return;
-        requestAnimationFrame(() => {
-          if (!dom.transcriptScroll) return;
-          dom.transcriptScroll.scrollTop = dom.transcriptScroll.scrollHeight;
-          syncScrollBottomBtn();
-        });
-      }
-
-      // =========================================================
-      // 7. モード別レイアウト & 高密度オプション制御
-      // =========================================================
-
-      function applyModeLayout() {
-        if (!dom.modeSelect || !dom.transcriptScroll || !dom.compactOptionsBar) return;
-        const mode = dom.modeSelect.value;
-        const isCompact = mode === 'tw-translate';
-
-        dom.transcriptScroll.classList.toggle('compact-mode', isCompact);
-        dom.compactOptionsBar.classList.toggle('hidden', !isCompact);
-
-        const meta = MODES[mode] || MODES['tw-practice'];
-        if (dom.emptyStateTitle) dom.emptyStateTitle.textContent = meta.title;
-        if (dom.emptyStateDesc) dom.emptyStateDesc.textContent = meta.desc;
-
-        updateCompactToolbarUI();
-        syncScrollBottomBtn();
-      }
-
-      function updateCompactToolbarUI() {
-        if (!dom.transcriptScroll) return;
-        dom.transcriptScroll.classList.toggle('hide-original', !showOriginal);
-        dom.transcriptScroll.classList.toggle('compact-size-sm', compactSize === 'sm');
-
-        if (dom.toggleOriginalBtn) {
-          dom.toggleOriginalBtn.textContent = showOriginal ? '原文: ON' : '原文: OFF';
-          dom.toggleOriginalBtn.className = showOriginal
-            ? 'px-2.5 py-1 rounded-lg font-bold border transition cursor-pointer bg-blue-600 text-white border-blue-600'
-            : 'px-2.5 py-1 rounded-lg font-bold border transition cursor-pointer bg-white text-slate-600 border-slate-300 hover:bg-slate-50';
-        }
-
-        if (dom.toggleFontSizeBtn) {
-          dom.toggleFontSizeBtn.textContent = compactSize === 'sm' ? '文字: 小' : '文字: 中';
-          dom.toggleFontSizeBtn.className = compactSize === 'sm'
-            ? 'px-2.5 py-1 rounded-lg font-bold border transition cursor-pointer bg-slate-800 text-white border-slate-800'
-            : 'px-2.5 py-1 rounded-lg font-bold border transition cursor-pointer bg-white text-slate-700 border-slate-300 hover:bg-slate-50';
-        }
-      }
-
-      // =========================================================
-      // 8. Gemini API 高速翻訳エンジン
-      // =========================================================
-
-      async function fetchWithTimeout(url, options) {
-        const controller = new AbortController();
-        const timerId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-        try {
-          return await fetch(url, Object.assign({}, options, { signal: controller.signal }));
-        } catch (err) {
-          if (err && err.name === 'AbortError') {
-            const timeoutErr = new Error('タイムアウト (6秒)');
-            timeoutErr.isTimeout = true;
-            throw timeoutErr;
-          }
-          throw err;
-        } finally {
-          clearTimeout(timerId);
-        }
-      }
-
-      function isInvalidKeyError(err) {
-        if (!err) return false;
-        const msg = `${err.message || ''} ${err.rawMessage || ''} ${err.apiStatus || ''}`;
-        return (
-          (err.status === 400 || err.status === 401 || err.status === 403) &&
-          /(API_KEY_INVALID|API key not valid|API key expired|INVALID_ARGUMENT.*API key)/i.test(msg)
-        );
-      }
-
-      async function callSingleModel(model, prompt, key) {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
-        const response = await fetchWithTimeout(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }]
-          })
-        });
-
-        let data = {};
-        try {
-          data = await response.json();
-        } catch (e) {
-          data = {};
-        }
-
-        if (!response.ok) {
-          const detail = data?.error?.message || response.statusText || 'APIエラー';
-          const err = new Error(`HTTP ${response.status}: ${detail}`);
-          err.status = response.status;
-          err.apiStatus = data?.error?.status || '';
-          err.rawMessage = detail;
-          throw err;
-        }
-
-        const out = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-        if (!out) {
-          throw new Error('翻訳結果が空でした');
-        }
-        return out;
-      }
-
-      async function discoverAvailableModels(key) {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`;
-        const response = await fetchWithTimeout(url, { method: 'GET' });
-
-        let data = {};
-        try {
-          data = await response.json();
-        } catch (e) {
-          data = {};
-        }
-
-        if (!response.ok) {
-          const detail = data?.error?.message || response.statusText || 'モデル一覧の取得に失敗しました';
-          const err = new Error(`HTTP ${response.status}: ${detail}`);
-          err.status = response.status;
-          err.apiStatus = data?.error?.status || '';
-          err.rawMessage = detail;
-          throw err;
-        }
-
-        const rawList = Array.isArray(data.models) ? data.models : [];
-        const candidates = rawList
-          .filter((item) => {
-            const methods = Array.isArray(item.supportedGenerationMethods) ? item.supportedGenerationMethods : [];
-            if (!methods.includes('generateContent')) return false;
-            const name = String(item.name || '').replace(/^models\//, '');
-            if (!name.toLowerCase().includes('gemini')) return false;
-            if (EXCLUDED_MODEL_REGEX.test(name)) return false;
-            return true;
-          })
-          .map((item) => String(item.name || '').replace(/^models\//, ''));
-
-        const unique = Array.from(new Set(candidates));
-        unique.sort((a, b) => {
-          const rank = (name) => {
-            const lower = name.toLowerCase();
-            if (lower === 'gemini-3.5-flash-lite') return 0;
-            if (lower.includes('flash-lite')) return 1;
-            if (lower.includes('lite')) return 2;
-            if (lower.includes('flash')) return 3;
-            if (lower.includes('pro')) return 4;
-            return 5;
-          };
-          const diff = rank(a) - rank(b);
-          return diff !== 0 ? diff : a.localeCompare(b);
-        });
-
-        discoveredModels = unique;
-        renderModelOptions();
-        return unique;
-      }
-
-      function buildModelQueue() {
-        if (selectedModel && selectedModel !== 'auto') {
-          return [selectedModel];
-        }
-        const queue = [];
-        if (stickyModel) queue.push(stickyModel);
-        PRESET_MODELS.forEach((m) => { if (!queue.includes(m)) queue.push(m); });
-        return queue;
-      }
-
-      async function callGeminiTranslate(prompt, key, onProgress) {
-        const queue = buildModelQueue();
-        const tried = new Set();
-        let lastError = null;
-
-        for (let i = 0; i < queue.length; i++) {
-          const model = queue[i];
-          tried.add(model);
-          if (typeof onProgress === 'function') onProgress(`翻訳中... (${model})`);
-
-          try {
-            const text = await callSingleModel(model, prompt, key);
-            saveStickyModel(model);
-            return { text, model };
-          } catch (err) {
-            if (isInvalidKeyError(err)) {
-              throw new Error('APIキーが無効です。設定画面で正しいGemini APIキーを確認してください。');
-            }
-            lastError = new Error(`[${model}] ${err.message || '通信エラー'}`);
-          }
-        }
-
-        // 自動モードで全デフォルト候補が失敗した場合のみ ListModels で代替を検索
-        if (selectedModel === 'auto') {
-          if (typeof onProgress === 'function') onProgress('利用可能な代替モデルを検索中...');
-          try {
-            const available = await discoverAvailableModels(key);
-            const extras = available.filter((m) => !tried.has(m)).slice(0, 3);
-            for (let i = 0; i < extras.length; i++) {
-              const model = extras[i];
-              if (typeof onProgress === 'function') onProgress(`翻訳中... (${model})`);
-              try {
-                const text = await callSingleModel(model, prompt, key);
-                saveStickyModel(model);
-                return { text, model };
-              } catch (err) {
-                if (isInvalidKeyError(err)) {
-                  throw new Error('APIキーが無効です。設定画面で正しいGemini APIキーを確認してください。');
-                }
-                lastError = new Error(`[${model}] ${err.message || '通信エラー'}`);
-              }
-            }
-          } catch (listErr) {
-            if (isInvalidKeyError(listErr)) {
-              throw new Error('APIキーが無効です。設定画面で正しいGemini APIキーを確認してください。');
-            }
-            if (!lastError) lastError = listErr;
-          }
-        }
-
-        throw lastError || new Error('翻訳モデルに接続できませんでした');
-      }
-
-      function buildPrompt(text, mode) {
-        if (mode === 'tw-translate') {
-          return `Translate the following Taiwanese Mandarin into natural, concise Japanese. Output ONLY the Japanese translation.\n\n${text}`;
-        }
-        if (mode === 'jp-to-tw') {
-          return `Translate the following Japanese into natural Taiwanese Mandarin (Traditional Chinese / 繁体字, Taiwan phrasing). Output ONLY the Traditional Chinese text.\n\n${text}`;
-        }
-        if (mode === 'en-translate') {
-          return `Translate the following English into natural Japanese. Output ONLY the Japanese translation.\n\n${text}`;
-        }
-        return text;
-      }
-
-      // =========================================================
-      // 9. 会話アイテム描画・翻訳実行
-      // =========================================================
-
-      /**
-       * 1.5秒以内の同一文重複を除外しながら確定発話を追加する
-       */
-      function commitUtterance(text, mode) {
-        const trimmed = String(text || '').trim();
-        if (!trimmed) return false;
-
-        const now = Date.now();
-        if (trimmed === lastCommittedText && (now - lastCommittedAt) < DEDUP_WINDOW_MS) {
-          return false;
-        }
-        lastCommittedText = trimmed;
-        lastCommittedAt = now;
-
-        renderUtteranceCard(trimmed, mode);
-        return true;
-      }
-
-      function renderUtteranceCard(text, mode) {
-        const pinned = isNearBottom();
-        if (dom.emptyStateCard) dom.emptyStateCard.classList.add('hidden');
-
-        const meta = MODES[mode] || MODES['tw-practice'];
-        const timeStr = formatTime();
-
-        const card = document.createElement('article');
-        card.className = 'utterance-card bg-white rounded-2xl border border-slate-200/90 p-3.5 shadow-sm';
-        card.dataset.mode = mode;
-        card.dataset.time = timeStr;
-        card.innerHTML = `
-          <div class="card-header flex items-center justify-between gap-2 mb-1.5">
-            <span class="mode-pill px-2.5 py-0.5 rounded-full text-[11px] font-bold ${meta.pillClass}">
-              ${escapeHtml(meta.pill)}
-            </span>
-            <span class="card-time text-[11px] font-medium text-slate-400">${escapeHtml(timeStr)}</span>
-          </div>
-          <div class="orig-text text-xl sm:text-2xl font-bold text-slate-900 leading-snug break-words select-text">${escapeHtml(text)}</div>
-          <div class="orig-pinyin text-sm text-slate-500 font-mono mt-1 leading-relaxed break-words select-text hidden"></div>
-          <div class="orig-tts-slot"></div>
-          <div class="output-area mt-2.5 pt-2.5 border-t border-slate-100 hidden"></div>
-        `;
-
-        if (dom.transcriptList && dom.interimPreview) {
-          dom.transcriptList.insertBefore(card, dom.interimPreview);
-        } else if (dom.transcriptList) {
-          dom.transcriptList.appendChild(card);
-        }
-
-        if (mode === 'tw-practice') {
-          const py = toPinyin(text);
-          const pyEl = card.querySelector('.orig-pinyin');
-          if (py && pyEl) {
-            pyEl.textContent = py;
-            pyEl.classList.remove('hidden');
-          }
-          // 発音練習モード：ピンイン直下に中国語音声再生ボタンを表示
-          const ttsSlot = card.querySelector('.orig-tts-slot');
-          if (ttsSlot) {
-            ttsSlot.appendChild(createTtsControlsRow(text));
-          }
-        } else {
-          translateCard(text, mode, card);
-        }
-
-        autoScrollIfPinned(pinned);
-        syncScrollBottomBtn();
-      }
-
-      async function translateCard(text, mode, card) {
-        const outputArea = card.querySelector('.output-area');
-        if (!outputArea) return;
-        outputArea.classList.remove('hidden');
-
-        // 入力欄に未保存のキーがあれば自動保存して利用
-        const inputVal = normalizeKey(dom.apiKeyInput ? dom.apiKeyInput.value : '');
-        if (inputVal && inputVal !== apiKey) {
-          saveApiKey(inputVal);
-        }
-        const activeKey = apiKey;
-
-        if (!activeKey) {
-          renderCardError(
-            outputArea,
-            'APIキーが未設定です。右上の「⚙️ 設定」からGemini APIキーを保存してください。',
-            text,
-            mode,
-            card
-          );
-          return;
-        }
-
-        const prompt = buildPrompt(text, mode);
-
-        try {
-          const { text: translated, model: usedModel } = await callGeminiTranslate(
-            prompt,
-            activeKey,
-            (statusText) => {
-              const pinned = isNearBottom();
-              const isCompact = dom.modeSelect && dom.modeSelect.value === 'tw-translate';
-              const label = isCompact ? '翻訳中...' : statusText;
-              outputArea.innerHTML = `
-                <div class="translating-row flex items-center gap-2 text-xs sm:text-sm font-medium text-slate-500">
-                  <span class="spinner" aria-hidden="true"></span>
-                  <span class="truncate">${escapeHtml(label)}</span>
-                </div>
-              `;
-              autoScrollIfPinned(pinned);
-            }
-          );
-
-          const pinned = isNearBottom();
-          outputArea.innerHTML = '';
-
-          const transEl = document.createElement('div');
-          transEl.className = 'trans-text text-base sm:text-lg font-bold text-[#1a56db] leading-relaxed break-words select-text';
-          transEl.textContent = translated;
-          outputArea.appendChild(transEl);
-
-          // 日本語→台湾華語翻訳モード：ピンイン＋中国語音声再生ボタンを表示
-          if (mode === 'jp-to-tw') {
-            const py = toPinyin(translated);
-            if (py) {
-              const pyEl = document.createElement('div');
-              pyEl.className = 'trans-pinyin text-sm text-slate-500 font-mono mt-1 leading-relaxed break-words select-text';
-              pyEl.textContent = py;
-              outputArea.appendChild(pyEl);
-            }
-            outputArea.appendChild(createTtsControlsRow(translated));
-          }
-
-          // 使用モデルバッジ（tw-translate高密度モードではCSSで自動非表示）
-          const badgeRow = document.createElement('div');
-          badgeRow.className = 'model-badge-row mt-1.5 flex justify-end';
-          badgeRow.innerHTML = `
-            <span class="model-badge-pill inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 text-slate-500 text-[10px] font-semibold">
-              <span aria-hidden="true">⚡</span>
-              <span>${escapeHtml(usedModel)}</span>
-            </span>
-          `;
-          outputArea.appendChild(badgeRow);
-
-          autoScrollIfPinned(pinned);
-          syncScrollBottomBtn();
-        } catch (err) {
-          renderCardError(outputArea, err.message || '翻訳に失敗しました', text, mode, card);
-        }
-      }
-
-      function renderCardError(outputArea, message, originalText, mode, card) {
-        const pinned = isNearBottom();
-        outputArea.innerHTML = `
-          <div class="error-box bg-rose-50 border border-rose-200 rounded-xl p-2.5 space-y-1.5">
-            <div class="error-msg text-xs sm:text-sm font-semibold text-rose-700 leading-relaxed break-words">
-              ⚠️ ${escapeHtml(message)}
-            </div>
-            <button
-              type="button"
-              class="card-retry-btn inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-rose-300 text-rose-700 hover:bg-rose-100 active:scale-[0.98] text-xs font-bold shadow-sm transition cursor-pointer shrink-0"
-            >
-              🔄 再試行
-            </button>
-          </div>
-        `;
-
-        const retryBtn = outputArea.querySelector('.card-retry-btn');
-        if (retryBtn) {
-          retryBtn.addEventListener('click', () => {
-            translateCard(originalText, mode, card);
-          });
-        }
-        autoScrollIfPinned(pinned);
-        syncScrollBottomBtn();
-      }
-
-      function setInterimPreview(text) {
-        if (!dom.interimPreview || !dom.interimPreviewText) return;
-        const trimmed = String(text || '').trim();
-        const pinned = isNearBottom();
-
-        if (trimmed) {
-          if (dom.emptyStateCard) dom.emptyStateCard.classList.add('hidden');
-          dom.interimPreviewText.textContent = trimmed;
-          dom.interimPreview.classList.remove('hidden');
-          autoScrollIfPinned(pinned);
-        } else {
-          dom.interimPreviewText.textContent = '';
-          dom.interimPreview.classList.add('hidden');
-        }
-      }
-
-      // =========================================================
-      // 10. Android Chrome 安定化 音声認識エンジン
-      // =========================================================
 
       function clearRecognitionTimers() {
+        clearStartTimeout();
         if (restartTimer) {
           clearTimeout(restartTimer);
           restartTimer = null;
@@ -1519,7 +1055,8 @@
       }
 
       /**
-       * 録音ボタンの表示状態を更新 ('idle' | 'listening' | 'recognizing' | 'reconnecting' | 'tts')
+       * 録音ボタンおよびライブステータスバーの表示状態を更新
+       * state: 'idle' | 'connecting' | 'active' | 'speaking' | 'reconnecting' | 'tts'
        */
       function updateMicButtonUI(state) {
         if (!dom.micBtn || !dom.micBtnIcon || !dom.micBtnLabel) return;
@@ -1529,6 +1066,14 @@
           dom.micBtn.classList.add('bg-[#16a34a]', 'hover:bg-[#15803d]');
           dom.micBtnIcon.textContent = '🎤';
           dom.micBtnLabel.textContent = '録音開始';
+
+          if (dom.micLiveDot) {
+            dom.micLiveDot.className = 'inline-block w-2 h-2 rounded-full bg-slate-300 shrink-0';
+          }
+          if (dom.micLiveText) {
+            dom.micLiveText.textContent = '待機中（タップして録音開始）';
+            dom.micLiveText.className = 'truncate text-slate-500';
+          }
           return;
         }
 
@@ -1536,14 +1081,41 @@
         dom.micBtn.classList.add('bg-rose-600', 'hover:bg-rose-700', 'recording-pulse');
         dom.micBtnIcon.textContent = '⏹';
 
-        if (state === 'recognizing') {
-          dom.micBtnLabel.textContent = '録音停止（認識中...）';
+        if (state === 'connecting') {
+          dom.micBtnLabel.textContent = '録音停止（⏳ 接続中...）';
+          if (dom.micLiveDot) dom.micLiveDot.className = 'inline-block w-2 h-2 rounded-full bg-amber-500 animate-pulse shrink-0';
+          if (dom.micLiveText) {
+            dom.micLiveText.textContent = '⏳ 接続中...';
+            dom.micLiveText.className = 'truncate text-amber-700';
+          }
+        } else if (state === 'speaking') {
+          dom.micBtnLabel.textContent = '録音停止（🗣️ 音声を検出中...）';
+          if (dom.micLiveDot) dom.micLiveDot.className = 'inline-block w-2 h-2 rounded-full bg-rose-500 animate-ping shrink-0';
+          if (dom.micLiveText) {
+            dom.micLiveText.textContent = '🗣️ 音声を検出中...';
+            dom.micLiveText.className = 'truncate text-rose-600';
+          }
         } else if (state === 'reconnecting') {
-          dom.micBtnLabel.textContent = '録音停止（再接続中...）';
+          dom.micBtnLabel.textContent = '録音停止（🔄 再接続中...）';
+          if (dom.micLiveDot) dom.micLiveDot.className = 'inline-block w-2 h-2 rounded-full bg-amber-500 animate-pulse shrink-0';
+          if (dom.micLiveText) {
+            dom.micLiveText.textContent = '🔄 再接続中...';
+            dom.micLiveText.className = 'truncate text-amber-700';
+          }
         } else if (state === 'tts') {
-          dom.micBtnLabel.textContent = '録音停止（発音再生中...）';
+          dom.micBtnLabel.textContent = '録音停止（🔊 発音再生中...）';
+          if (dom.micLiveDot) dom.micLiveDot.className = 'inline-block w-2 h-2 rounded-full bg-teal-500 animate-pulse shrink-0';
+          if (dom.micLiveText) {
+            dom.micLiveText.textContent = '🔊 発音再生中...';
+            dom.micLiveText.className = 'truncate text-teal-700';
+          }
         } else {
-          dom.micBtnLabel.textContent = '録音停止（聞き取り中...）';
+          dom.micBtnLabel.textContent = '録音停止（🎙️ マイク稼働中）';
+          if (dom.micLiveDot) dom.micLiveDot.className = 'inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0';
+          if (dom.micLiveText) {
+            dom.micLiveText.textContent = '🎙️ マイク稼働中';
+            dom.micLiveText.className = 'truncate text-emerald-700';
+          }
         }
       }
 
@@ -1559,25 +1131,31 @@
         if (!rescue) return false;
 
         utteranceCommitted = true;
+        lastRescuedSnapshot = rescue;
         return commitUtterance(rescue, activeUtteranceMode);
       }
 
       /**
-       * 仮テキスト更新が3.5秒停止したら強制確定して再接続するウォッチドッグ
+       * 仮テキスト更新が3.5秒停止したら自動確定するウォッチドッグ
        */
       function resetWatchdog() {
         if (watchdogTimer) {
           clearTimeout(watchdogTimer);
           watchdogTimer = null;
         }
-        if (!shouldBeRecording || pausedForTTS || utteranceCommitted) return;
+        if (!wantRecording || pausedForTTS || utteranceCommitted) return;
 
         watchdogTimer = setTimeout(() => {
           watchdogTimer = null;
-          if (!shouldBeRecording || pausedForTTS || utteranceCommitted) return;
+          if (!wantRecording || pausedForTTS || utteranceCommitted) return;
           if (!(bestInterimText || lastInterimText).trim()) return;
 
           rescuePendingInterim();
+          if (isIOS) {
+            // iOSの連続認識ではセッションを落とさずマイク稼働表示に戻す
+            if (isRecognizing) updateMicButtonUI('active');
+            return;
+          }
           if (recognition && isRecognizing) {
             try {
               recognition.stop();
@@ -1594,22 +1172,44 @@
         if (!SR) return null;
 
         const rec = new SR();
-        rec.continuous = false;
+        // iOSでは自動再開ブロック回避のため continuous = true、Androidは従来通り false
+        rec.continuous = isIOS;
         rec.interimResults = true;
 
         rec.onstart = () => {
+          clearStartTimeout();
+          isStarting = false;
           isRecognizing = true;
           utteranceCommitted = false;
           lastInterimText = '';
           bestInterimText = '';
+          lastRescuedSnapshot = '';
           activeUtteranceMode = dom.modeSelect ? dom.modeSelect.value : 'tw-practice';
-          if (!pausedForTTS) {
-            updateMicButtonUI('listening');
+          if (!pausedForTTS && wantRecording) {
+            updateMicButtonUI('active');
+          }
+        };
+
+        rec.onaudiostart = () => {
+          if (!pausedForTTS && wantRecording && isRecognizing) {
+            updateMicButtonUI('active');
+          }
+        };
+
+        rec.onspeechstart = () => {
+          if (!pausedForTTS && wantRecording && isRecognizing) {
+            updateMicButtonUI('speaking');
+          }
+        };
+
+        rec.onspeechend = () => {
+          if (!pausedForTTS && wantRecording && isRecognizing) {
+            updateMicButtonUI('active');
           }
         };
 
         rec.onresult = (event) => {
-          if (pausedForTTS) return;
+          if (pausedForTTS || !wantRecording) return;
           errorRetryCount = 0;
 
           let finalText = '';
@@ -1632,17 +1232,29 @@
               clearTimeout(watchdogTimer);
               watchdogTimer = null;
             }
-            utteranceCommitted = true;
+            // 直前にウォッチドッグで救済済みの同一文なら重複確定をスキップ
+            const alreadyRescued = lastRescuedSnapshot && trimmedFinal === lastRescuedSnapshot;
+            lastRescuedSnapshot = '';
             lastInterimText = '';
             bestInterimText = '';
             setInterimPreview('');
-            commitUtterance(trimmedFinal, activeUtteranceMode);
+            utteranceCommitted = !isIOS;
+            if (!alreadyRescued) {
+              commitUtterance(trimmedFinal, activeUtteranceMode);
+            }
+            if (isRecognizing) updateMicButtonUI('active');
           } else if (trimmedInterim) {
+            // 直前に救済確定した仮テキストがそのまま残っている場合は再処理しない
+            if (lastRescuedSnapshot && trimmedInterim === lastRescuedSnapshot) {
+              return;
+            }
+            lastRescuedSnapshot = '';
+            utteranceCommitted = false;
             lastInterimText = trimmedInterim;
             if (trimmedInterim.length >= bestInterimText.length) {
               bestInterimText = trimmedInterim;
             }
-            updateMicButtonUI('recognizing');
+            updateMicButtonUI('speaking');
             setInterimPreview(trimmedInterim);
             resetWatchdog();
           } else if (bestInterimText && !utteranceCommitted) {
@@ -1655,6 +1267,7 @@
         };
 
         rec.onerror = (event) => {
+          clearStartTimeout();
           const code = event ? event.error : '';
 
           if (code === 'not-allowed' || code === 'service-not-allowed') {
@@ -1663,13 +1276,27 @@
             return;
           }
 
-          if (!shouldBeRecording || pausedForTTS) return;
+          if (!wantRecording || pausedForTTS) return;
+
+          if (isIOS) {
+            // iOSでエラー停止した場合はゾンビ状態を防ぐため確実に停止表示へ戻す
+            if (code === 'no-speech' || code === 'aborted' || code === 'audio-capture' || code === 'network') {
+              rescuePendingInterim();
+              wantRecording = false;
+              isStarting = false;
+              isRecognizing = false;
+              clearRecognitionTimers();
+              updateMicButtonUI('idle');
+              showToast('マイクが停止しました。もう一度タップしてください');
+            }
+            return;
+          }
 
           errorRetryCount = Math.min(errorRetryCount + 1, 4);
           pendingBackoffMs = Math.min(ERROR_BACKOFF_MAX_MS, ERROR_BACKOFF_STEP_MS * errorRetryCount);
           updateMicButtonUI('reconnecting');
 
-          if (!isRecognizing) {
+          if (!isRecognizing && !isStarting) {
             const delay = pendingBackoffMs;
             pendingBackoffMs = 0;
             scheduleRestart(delay);
@@ -1677,6 +1304,8 @@
         };
 
         rec.onend = () => {
+          clearStartTimeout();
+          isStarting = false;
           isRecognizing = false;
           if (watchdogTimer) {
             clearTimeout(watchdogTimer);
@@ -1688,14 +1317,47 @@
             lastInterimText = '';
             bestInterimText = '';
             setInterimPreview('');
-            if (shouldBeRecording) updateMicButtonUI('tts');
+            if (wantRecording) updateMicButtonUI('tts');
             return;
           }
 
           rescuePendingInterim();
           setInterimPreview('');
 
-          if (shouldBeRecording) {
+          // モード切替に伴う意図的な再起動
+          if (modeSwitchInProgress) {
+            modeSwitchInProgress = false;
+            if (wantRecording) {
+              if (isIOS) {
+                // iOSでは非同期の自動再起動が弾かれやすいため一度安全に停止状態へ戻す
+                wantRecording = false;
+                updateMicButtonUI('idle');
+                showToast('モードを切り替えました。もう一度「録音開始」をタップしてください');
+              } else {
+                scheduleRestart(RESTART_COOLDOWN_MS);
+              }
+            } else {
+              updateMicButtonUI('idle');
+            }
+            return;
+          }
+
+          if (manualStopInProgress) {
+            manualStopInProgress = false;
+            pendingBackoffMs = 0;
+            updateMicButtonUI('idle');
+            return;
+          }
+
+          if (wantRecording) {
+            if (isIOS) {
+              // iOSでonendが発火した場合は自動再開せず即座に停止状態へ戻してゾンビ状態を防ぐ
+              wantRecording = false;
+              pendingBackoffMs = 0;
+              updateMicButtonUI('idle');
+              showToast('マイクが停止しました。もう一度タップしてください');
+              return;
+            }
             const delay = pendingBackoffMs > 0 ? pendingBackoffMs : RESTART_COOLDOWN_MS;
             if (pendingBackoffMs > 0) updateMicButtonUI('reconnecting');
             pendingBackoffMs = 0;
@@ -1714,41 +1376,73 @@
           clearTimeout(restartTimer);
           restartTimer = null;
         }
-        if (!shouldBeRecording || pausedForTTS) return;
+        if (isIOS || !wantRecording || pausedForTTS) return;
 
         const safeDelay = Math.max(RESTART_COOLDOWN_MS, Number(delayMs) || RESTART_COOLDOWN_MS);
         restartTimer = setTimeout(() => {
           restartTimer = null;
-          if (!shouldBeRecording || pausedForTTS || isRecognizing) return;
+          if (!wantRecording || pausedForTTS || isRecognizing || isStarting) return;
           startRecognition();
         }, safeDelay);
       }
 
       function startRecognition() {
-        if (!shouldBeRecording || pausedForTTS || isRecognizing) return;
+        if (!wantRecording || pausedForTTS || isRecognizing || isStarting) return;
 
         if (!recognition) {
           recognition = createRecognitionInstance();
         }
         if (!recognition) {
           stopRecording(false);
-          showToast('このブラウザは音声認識に非対応です。Google Chromeをお使いください。');
+          showToast('このブラウザは音声認識に非対応です。SafariまたはGoogle Chromeをお使いください。');
           return;
         }
 
         utteranceCommitted = false;
         lastInterimText = '';
         bestInterimText = '';
+        lastRescuedSnapshot = '';
         activeUtteranceMode = dom.modeSelect ? dom.modeSelect.value : 'tw-practice';
 
         const meta = MODES[activeUtteranceMode] || MODES['tw-practice'];
         recognition.lang = meta.lang;
+        recognition.continuous = isIOS;
+
+        clearStartTimeout();
+        isStarting = true;
+        updateMicButtonUI('connecting');
+
+        // 3秒以内にonstartが来ない（起動詰まり）場合は強制リセットして停止状態へ戻す
+        startTimeoutTimer = setTimeout(() => {
+          startTimeoutTimer = null;
+          if (!isStarting || isRecognizing) return;
+
+          isStarting = false;
+          wantRecording = false;
+          manualStopInProgress = true;
+          clearRecognitionTimers();
+          try {
+            recognition.abort();
+          } catch (e) {
+            try { recognition.stop(); } catch (e2) {}
+          }
+          manualStopInProgress = false;
+          updateMicButtonUI('idle');
+          showToast('マイクの起動がタイムアウトしました。もう一度タップしてください');
+        }, START_TIMEOUT_MS);
 
         try {
-          isRecognizing = true;
           recognition.start();
         } catch (err) {
+          clearStartTimeout();
+          isStarting = false;
           isRecognizing = false;
+          if (isIOS) {
+            wantRecording = false;
+            updateMicButtonUI('idle');
+            showToast('マイクを開始できませんでした。もう一度タップしてください');
+            return;
+          }
           errorRetryCount = Math.min(errorRetryCount + 1, 4);
           const backoff = Math.min(ERROR_BACKOFF_MAX_MS, ERROR_BACKOFF_STEP_MS * errorRetryCount);
           updateMicButtonUI('reconnecting');
@@ -1773,7 +1467,7 @@
           recognition = createRecognitionInstance();
         }
         if (!recognition) {
-          showToast('このブラウザは音声認識に非対応です。AndroidのGoogle Chrome等をお使いください。');
+          showToast('このブラウザは音声認識に非対応です。SafariまたはGoogle Chromeをお使いください。');
           return;
         }
 
@@ -1781,15 +1475,18 @@
         errorRetryCount = 0;
         pendingBackoffMs = 0;
         pausedForTTS = false;
-        shouldBeRecording = true;
-        updateMicButtonUI('listening');
+        manualStopInProgress = false;
+        modeSwitchInProgress = false;
+        wantRecording = true;
         startRecognition();
       }
 
       function stopRecording(shouldRescue) {
         const rescue = shouldRescue !== false;
-        shouldBeRecording = false;
+        wantRecording = false;
         pausedForTTS = false;
+        modeSwitchInProgress = false;
+        manualStopInProgress = true;
         pendingBackoffMs = 0;
         errorRetryCount = 0;
         clearRecognitionTimers();
@@ -1802,12 +1499,18 @@
           setInterimPreview('');
         }
 
-        if (recognition && isRecognizing) {
+        if (recognition && (isRecognizing || isStarting)) {
           try {
             recognition.stop();
           } catch (e) {
             isRecognizing = false;
+            isStarting = false;
+            manualStopInProgress = false;
           }
+        } else {
+          isRecognizing = false;
+          isStarting = false;
+          manualStopInProgress = false;
         }
         updateMicButtonUI('idle');
       }
@@ -1927,40 +1630,40 @@
             );
             showToast(`接続成功: ${result.model}`);
           } catch (err) {
-            setInlineStatus(`❌ 接続エラー: ${err.message || '通信に失敗しました'}`, 'error');
-            showToast('接続テストに失敗しました');
-          } finally {
-            dom.testApiBtn.disabled = false;
-            dom.testApiBtn.classList.remove('opacity-60');
-          }
-        });
-
-        // モデル手動選択
-        dom.modelSelect.addEventListener('change', () => {
-          saveSelectedModel(dom.modelSelect.value);
-          const label = dom.modelSelect.value === 'auto' ? '自動（最速優先）' : dom.modelSelect.value;
-          showToast(`モデル設定: ${label}`);
-        });
-
-        // モード選択変更（録音中なら新言語で安全に再起動）
+        // モード選択変更（録音中なら新言語で安全に切り替え）
         dom.modeSelect.addEventListener('change', () => {
           applyModeLayout();
           const meta = MODES[dom.modeSelect.value];
           if (meta) showToast(`モード: ${meta.pill}`);
 
-          if (shouldBeRecording && !pausedForTTS) {
+          if (wantRecording && !pausedForTTS) {
             clearRecognitionTimers();
             pendingBackoffMs = 0;
+            modeSwitchInProgress = true;
             updateMicButtonUI('reconnecting');
-            if (recognition && isRecognizing) {
+            if (recognition && (isRecognizing || isStarting)) {
               try {
                 recognition.stop();
               } catch (e) {
                 isRecognizing = false;
-                scheduleRestart(RESTART_COOLDOWN_MS);
+                isStarting = false;
+                modeSwitchInProgress = false;
+                if (isIOS) {
+                  wantRecording = false;
+                  updateMicButtonUI('idle');
+                  showToast('モードを切り替えました。もう一度「録音開始」をタップしてください');
+                } else {
+                  scheduleRestart(RESTART_COOLDOWN_MS);
+                }
               }
             } else {
-              scheduleRestart(RESTART_COOLDOWN_MS);
+              modeSwitchInProgress = false;
+              if (isIOS) {
+                wantRecording = false;
+                updateMicButtonUI('idle');
+              } else {
+                scheduleRestart(RESTART_COOLDOWN_MS);
+              }
             }
           }
         });
@@ -1994,7 +1697,7 @@
 
         // 録音開始 / 録音停止ボタン
         dom.micBtn.addEventListener('click', () => {
-          if (shouldBeRecording) {
+          if (wantRecording || isRecognizing || isStarting) {
             stopRecording(true);
           } else {
             startRecording();
@@ -2083,6 +1786,10 @@
           dom.interimPreview = document.getElementById('interim-preview');
           dom.interimPreviewText = document.getElementById('interim-preview-text');
           dom.scrollBottomBtn = document.getElementById('scroll-bottom-btn');
+          dom.micLiveStatus = document.getElementById('mic-live-status');
+          dom.micLiveDot = document.getElementById('mic-live-dot');
+          dom.micLiveText = document.getElementById('mic-live-text');
+          dom.envModeBadge = document.getElementById('env-mode-badge');
           dom.micBtn = document.getElementById('mic-btn');
           dom.micBtnIcon = document.getElementById('mic-btn-icon');
           dom.micBtnLabel = document.getElementById('mic-btn-label');
@@ -2090,8 +1797,13 @@
           dom.clearBtn = document.getElementById('clear-btn');
           dom.toast = document.getElementById('toast');
 
+          if (dom.envModeBadge) {
+            dom.envModeBadge.textContent = isIOS ? 'iOS最適化' : 'Android/PC最適化';
+          }
+
           loadSettings();
           applyModeLayout();
+          updateMicButtonUI('idle');
           recognition = createRecognitionInstance();
           bindEvents();
         } catch (err) {
